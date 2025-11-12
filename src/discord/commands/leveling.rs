@@ -87,9 +87,12 @@ pub async fn level(
     debug_assert_eq!(stats.guild_id, guild_id, "Stats pulled from wrong guild");
 
     // 3. Format response using Discord features (embeds)
-    let next_level_xp = ctx.data().leveling.xp_for_next_level(stats.level);
-    let xp_progress = stats.xp - (stats.level as u64).pow(2) * 50; // XP in current level
-    let xp_needed = next_level_xp - stats.xp; // XP until next level
+    let leveling = &ctx.data().leveling;
+    let previous_threshold = leveling.xp_for_level(stats.level);
+    let next_threshold = leveling.xp_for_next_level(stats.level);
+    let xp_progress = stats.xp.saturating_sub(previous_threshold);
+    let level_span = next_threshold.saturating_sub(previous_threshold);
+    let xp_needed = next_threshold.saturating_sub(stats.xp);
     let last_activity = stats
         .last_xp_gain
         .as_ref()
@@ -105,12 +108,7 @@ pub async fn level(
                 .field("Total XP", format!("**{}**", stats.xp), true)
                 .field(
                     "XP Progress",
-                    format!(
-                        "{} / {} ({} to go)",
-                        xp_progress,
-                        next_level_xp - (stats.level as u64).pow(2) * 50,
-                        xp_needed
-                    ),
+                    format!("{} / {} ({} to go)", xp_progress, level_span, xp_needed),
                     false,
                 )
                 .thumbnail(target_user.face()) // User's avatar

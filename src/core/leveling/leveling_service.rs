@@ -4,6 +4,7 @@
 // in a web app, CLI tool, or any other frontend.
 
 use async_trait::async_trait;
+use rand::Rng;
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
@@ -158,11 +159,44 @@ pub struct LevelingService<S: XpStore> {
     /// The storage implementation (injected via constructor).
     store: S,
 
-    /// How much XP to award per message.
-    xp_per_message: u64,
+    /// Runtime configuration for XP rolls and cooldowns.
+    config: LevelingConfig,
+}
 
-    /// Cooldown between XP gains (prevents spam).
-    cooldown: Duration,
+/// Configuration knobs for the leveling service.
+#[derive(Debug, Clone)]
+pub struct LevelingConfig {
+    /// Minimum XP a single message can grant.
+    pub xp_per_message_min: u64,
+    /// Maximum XP a single message can grant.
+    pub xp_per_message_max: u64,
+    /// Cooldown enforced between message-based XP grants.
+    pub cooldown: Duration,
+}
+
+impl LevelingConfig {
+    #[allow(dead_code)]
+    pub fn new(xp_per_message_min: u64, xp_per_message_max: u64, cooldown: Duration) -> Self {
+        debug_assert!(xp_per_message_min > 0, "XP minimum must be positive");
+        debug_assert!(xp_per_message_max >= xp_per_message_min);
+
+        Self {
+            xp_per_message_min,
+            xp_per_message_max,
+            cooldown,
+        }
+    }
+}
+
+impl Default for LevelingConfig {
+    fn default() -> Self {
+        // Mirrors the Python implementation's XP roll but uses a lighter 10 second cooldown.
+        Self {
+            xp_per_message_min: 15,
+            xp_per_message_max: 25,
+            cooldown: Duration::from_secs(10),
+        }
+    }
 }
 
 impl<S: XpStore> LevelingService<S> {
@@ -172,11 +206,12 @@ impl<S: XpStore> LevelingService<S> {
     /// We pass in the storage implementation rather than creating it here.
     /// This is a key principle of Clean Architecture.
     pub fn new(store: S) -> Self {
-        Self {
-            store,
-            xp_per_message: 15,                // Default: 15 XP per message
-            cooldown: Duration::from_secs(60), // Default: 1 minute cooldown
-        }
+        Self::with_config(store, LevelingConfig::default())
+    }
+
+    /// Create a leveling service with a custom configuration.
+    pub fn with_config(store: S, config: LevelingConfig) -> Self {
+        Self { store, config }
     }
 
     fn validate_ids(user_id: u64, guild_id: u64) -> Result<(), LevelingError> {
@@ -212,8 +247,8 @@ impl<S: XpStore> LevelingService<S> {
         // 1. Check cooldown
         if let Some(last_time) = self.store.get_last_xp_time(user_id, guild_id).await? {
             let elapsed = Instant::now().duration_since(last_time);
-            if elapsed < self.cooldown {
-                let remaining = self.cooldown - elapsed;
+            if elapsed < self.config.cooldown {
+                let remaining = self.config.cooldown - elapsed;
                 return Err(LevelingError::OnCooldown(remaining));
             }
         }
@@ -222,11 +257,10 @@ impl<S: XpStore> LevelingService<S> {
         let current_xp = self.store.get_xp(user_id, guild_id).await?;
         let old_level = self.calculate_level(current_xp);
 
-        // 3. Award XP
-        self.store
-            .add_xp(user_id, guild_id, self.xp_per_message)
-            .await?;
-        let new_xp = current_xp + self.xp_per_message;
+        // 3. Award XP using the Python-era 15-25 XP roll per eligible message.
+        let xp_gain = self.roll_message_xp();
+        self.store.add_xp(user_id, guild_id, xp_gain).await?;
+        let new_xp = current_xp + xp_gain;
 
         // 4. Update cooldown timestamp
         self.store
@@ -249,22 +283,50 @@ impl<S: XpStore> LevelingService<S> {
         }
     }
 
-    /// Calculate level from total XP.
-    ///
-    /// **Formula:** Uses a square root progression so levels get progressively harder.
-    /// Level 1 = 100 XP, Level 2 = 255 XP, Level 3 = 464 XP, etc.
-    ///
-    /// This is PURE business logic - no side effects, just math.
+    /// Calculate level from total XP using the legacy Python curve (100 * (level-1)^1.5).
     pub fn calculate_level(&self, xp: u64) -> u32 {
-        // Formula: level = floor(sqrt(xp / 50))
-        ((xp as f64 / 50.0).sqrt().floor() as u32).max(1)
+        Self::level_from_xp(xp)
     }
 
-    /// Calculate how much XP is needed for the next level.
+    /// Static helper so other layers (like infra) can reuse the level curve math.
+    pub fn level_from_xp(xp: u64) -> u32 {
+        if xp == 0 {
+            return 1;
+        }
+
+        let approx = ((xp as f64 / 100.0).powf(2.0 / 3.0)).floor() as u32 + 1;
+        let mut level = approx.max(1);
+
+        // Adjust upward if we undershot.
+        while level < u32::MAX && xp >= Self::xp_threshold_for_level(level + 1) {
+            level += 1;
+        }
+
+        // Adjust downward if we overshot (can happen near boundaries due to float math).
+        while level > 1 && xp < Self::xp_threshold_for_level(level) {
+            level -= 1;
+        }
+
+        level
+    }
+
+    /// Total XP required to REACH the next level (inclusive of previous levels).
     pub fn xp_for_next_level(&self, current_level: u32) -> u64 {
-        // Inverse of calculate_level formula
-        let next_level = current_level + 1;
-        (next_level as u64).pow(2) * 50
+        Self::xp_threshold_for_level(current_level + 1)
+    }
+
+    /// Total XP required to reach the provided level.
+    pub fn xp_for_level(&self, level: u32) -> u64 {
+        Self::xp_threshold_for_level(level)
+    }
+
+    fn xp_threshold_for_level(level: u32) -> u64 {
+        if level <= 1 {
+            return 0;
+        }
+
+        let power = (level - 1) as f64;
+        (100.0 * power.powf(1.5)) as u64
     }
 
     /// Get a user's current stats.
@@ -347,6 +409,15 @@ impl<S: XpStore> LevelingService<S> {
         } else {
             Ok(None)
         }
+    }
+
+    fn roll_message_xp(&self) -> u64 {
+        if self.config.xp_per_message_min == self.config.xp_per_message_max {
+            return self.config.xp_per_message_min;
+        }
+
+        let mut rng = rand::thread_rng();
+        rng.gen_range(self.config.xp_per_message_min..=self.config.xp_per_message_max)
     }
 }
 

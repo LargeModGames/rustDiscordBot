@@ -22,6 +22,7 @@ mod infra;
 
 use crate::core::leveling::LevelingService;
 use crate::discord::commands::presence;
+use crate::discord::leveling_announcements::send_level_up_embed;
 use crate::discord::{Data, Error};
 use crate::infra::leveling::InMemoryXpStore;
 use poise::serenity_prelude as serenity;
@@ -58,18 +59,9 @@ async fn event_handler(
                     );
 
                     // User leveled up! Announce it
-                    let _ = new_message
-                        .reply(
-                            &ctx.http,
-                            format!(
-                                "🎉 Congratulations <@{}>! Level {} ➜ **{}** ({} XP total)!",
-                                new_message.author.id.get(),
-                                level_up.old_level,
-                                level_up.new_level,
-                                level_up.total_xp
-                            ),
-                        )
-                        .await;
+                    if let Err(err) = send_level_up_embed(ctx, new_message, data, &level_up).await {
+                        tracing::warn!("Failed to send level-up embed: {err}");
+                    }
                 }
                 Ok(None) => {
                     // XP was awarded but no level up - nothing to do

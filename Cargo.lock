@@ -1215,6 +1215,7 @@ dependencies = [
  "dashmap 6.1.0",
  "dotenv",
  "poise",
+ "rand",
  "serenity",
  "thiserror",
  "tokio",
