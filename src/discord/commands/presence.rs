@@ -24,8 +24,8 @@ pub fn reset_status(ctx: &serenity::Context) {
     ctx.set_presence(Some(activity), serenity::OnlineStatus::Online);
 }
 
-/// Called when the bot is ready.
+/// Called once the bot is ready so we can announce a default presence message
+/// without repeating the setup code at every call site.
 pub fn on_ready(ctx: &serenity::Context) {
-    println!("Bot is ready!");
     reset_status(ctx);
 }

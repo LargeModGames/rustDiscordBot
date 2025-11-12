@@ -11,8 +11,13 @@
 // 3. Set up the Discord framework
 // 4. Register commands and event handlers
 
+// These attrs point each module declaration at a more descriptive root file
+// so we don't end up with half a dozen mod.rs files that all look the same.
+#[path = "core/core_layer.rs"]
 mod core;
+#[path = "discord/discord_layer.rs"]
 mod discord;
+#[path = "infra/infra_layer.rs"]
 mod infra;
 
 use crate::core::leveling::LevelingService;
