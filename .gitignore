@@ -1,0 +1,12 @@
+/target
+
+# Ignore environment files with secrets
+.env
+
+# Editor / OS junk
+.DS_Store
+
+# Backup Rust files
+**/*.rs.bk
+
+AGENTS.md
