@@ -21,10 +21,13 @@ mod discord;
 mod infra;
 
 use crate::core::leveling::LevelingService;
+use crate::core::server_stats::ServerStatsService;
 use crate::discord::commands::presence;
+use crate::discord::commands::server_stats::update_guild_stats;
 use crate::discord::leveling_announcements::send_level_up_embed;
 use crate::discord::{Data, Error};
 use crate::infra::leveling::InMemoryXpStore;
+use crate::infra::server_stats::JsonServerStatsStore;
 use poise::serenity_prelude as serenity;
 
 /// Event handler for non-command Discord events.
@@ -35,46 +38,64 @@ async fn event_handler(
     _framework: poise::FrameworkContext<'_, Data, Error>,
     data: &Data,
 ) -> Result<(), Error> {
-    if let serenity::FullEvent::Message { new_message } = event {
-        // Ignore bot messages (including our own)
-        if new_message.author.bot {
-            return Ok(());
-        }
+    match event {
+        serenity::FullEvent::Message { new_message } => {
+            // Ignore bot messages (including our own)
+            if new_message.author.bot {
+                return Ok(());
+            }
 
-        // Only process guild messages (not DMs)
-        if let Some(guild_id) = new_message.guild_id {
-            let user_id = new_message.author.id.get();
-            let guild_id = guild_id.get();
+            // Only process guild messages (not DMs)
+            if let Some(guild_id) = new_message.guild_id {
+                let user_id = new_message.author.id.get();
+                let guild_id = guild_id.get();
 
-            // Try to award XP for this message
-            match data.leveling.process_message(user_id, guild_id).await {
-                Ok(Some(level_up)) => {
-                    tracing::info!(
-                        user_id = level_up.user_id,
-                        guild_id = level_up.guild_id,
-                        old_level = level_up.old_level,
-                        new_level = level_up.new_level,
-                        total_xp = level_up.total_xp,
-                        "User leveled up"
-                    );
+                // Try to award XP for this message
+                match data.leveling.process_message(user_id, guild_id).await {
+                    Ok(Some(level_up)) => {
+                        tracing::info!(
+                            user_id = level_up.user_id,
+                            guild_id = level_up.guild_id,
+                            old_level = level_up.old_level,
+                            new_level = level_up.new_level,
+                            total_xp = level_up.total_xp,
+                            "User leveled up"
+                        );
 
-                    // User leveled up! Announce it
-                    if let Err(err) = send_level_up_embed(ctx, new_message, data, &level_up).await {
-                        tracing::warn!("Failed to send level-up embed: {err}");
+                        // User leveled up! Announce it
+                        if let Err(err) = send_level_up_embed(ctx, new_message, data, &level_up).await {
+                            tracing::warn!("Failed to send level-up embed: {err}");
+                        }
                     }
-                }
-                Ok(None) => {
-                    // XP was awarded but no level up - nothing to do
-                }
-                Err(crate::core::leveling::LevelingError::OnCooldown(_)) => {
-                    // User is on cooldown - silently ignore
-                }
-                Err(e) => {
-                    // Some other error - log it but don't crash
-                    eprintln!("Error processing XP for message: {}", e);
+                    Ok(None) => {
+                        // XP was awarded but no level up - nothing to do
+                    }
+                    Err(crate::core::leveling::LevelingError::OnCooldown(_)) => {
+                        // User is on cooldown - silently ignore
+                    }
+                    Err(e) => {
+                        // Some other error - log it but don't crash
+                        eprintln!("Error processing XP for message: {}", e);
+                    }
                 }
             }
         }
+        serenity::FullEvent::GuildMemberAddition { new_member } => {
+            if let Err(e) = update_guild_stats(ctx, data, new_member.guild_id).await {
+                eprintln!("Error updating stats on join: {}", e);
+            }
+        }
+        serenity::FullEvent::GuildMemberRemoval { guild_id, .. } => {
+            if let Err(e) = update_guild_stats(ctx, data, *guild_id).await {
+                eprintln!("Error updating stats on leave: {}", e);
+            }
+        }
+        serenity::FullEvent::GuildUpdate { old_data_if_available: _, new_data } => {
+             if let Err(e) = update_guild_stats(ctx, data, new_data.id).await {
+                eprintln!("Error updating stats on guild update: {}", e);
+            }
+        }
+        _ => {}
     }
 
     Ok(())
@@ -105,9 +126,14 @@ async fn main() {
     // Create the leveling service with the store injected
     let leveling_service = LevelingService::new(xp_store);
 
+    // Create server stats store
+    let stats_store = JsonServerStatsStore::new("server_stats.json");
+    let stats_service = ServerStatsService::new(stats_store);
+
     // Create the data structure that will be shared across all commands
     let data = Data {
         leveling: leveling_service,
+        server_stats: stats_service,
     };
 
     // ========================================================================
@@ -117,7 +143,8 @@ async fn main() {
 
     let intents = serenity::GatewayIntents::GUILD_MESSAGES
         | serenity::GatewayIntents::MESSAGE_CONTENT // Required to read message content
-        | serenity::GatewayIntents::GUILDS;
+        | serenity::GatewayIntents::GUILDS
+        | serenity::GatewayIntents::GUILD_MEMBERS;
 
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
@@ -126,6 +153,7 @@ async fn main() {
                 discord::commands::leveling::level(),
                 discord::commands::leveling::leaderboard(),
                 discord::commands::leveling::give_xp(),
+                discord::commands::server_stats::serverstats(),
             ],
             // Event handler for messages and other events
             event_handler: |ctx, event, framework, data| {
@@ -144,7 +172,7 @@ async fn main() {
 
                 println!("✅ Commands registered!");
                 println!("🚀 Bot is ready!");
-                presence::on_ready(ctx);
+                presence::on_ready(ctx, &data).await;
 
                 Ok(data)
             })

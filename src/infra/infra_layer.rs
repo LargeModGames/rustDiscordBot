@@ -3,3 +3,6 @@
 
 #[path = "leveling/leveling_store.rs"]
 pub mod leveling;
+
+#[path = "server_stats/mod.rs"]
+pub mod server_stats;

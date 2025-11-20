@@ -8,7 +8,9 @@
 // This layer is THIN - no business logic, just translation.
 
 use crate::core::leveling::{Difficulty, LevelingService, XpSource};
+use crate::core::server_stats::ServerStatsService;
 use crate::infra::leveling::InMemoryXpStore;
+use crate::infra::server_stats::JsonServerStatsStore;
 use poise::serenity_prelude as serenity;
 use std::time::Duration;
 
@@ -21,6 +23,7 @@ pub type Context<'a> = poise::Context<'a, Data, Error>;
 /// This is where we store our services and configuration.
 pub struct Data {
     pub leveling: LevelingService<InMemoryXpStore>,
+    pub server_stats: ServerStatsService<JsonServerStatsStore>,
 }
 
 #[derive(Debug, Clone, Copy, poise::ChoiceParameter)]

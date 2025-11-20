@@ -1216,6 +1216,8 @@ dependencies = [
  "dotenv",
  "poise",
  "rand",
+ "serde",
+ "serde_json",
  "serenity",
  "thiserror",
  "tokio",

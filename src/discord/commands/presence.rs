@@ -25,7 +25,22 @@ pub fn reset_status(ctx: &serenity::Context) {
 }
 
 /// Called when the bot is ready.
-pub fn on_ready(ctx: &serenity::Context) {
+pub async fn on_ready(ctx: &serenity::Context, data: &crate::discord::Data) {
     println!("Bot is ready!");
     reset_status(ctx);
+
+    // Update server stats channels on startup for all configured guilds
+    match data.server_stats.get_all_configs().await {
+        Ok(configs) => {
+            for cfg in configs {
+                let guild_id = serenity::GuildId::from(cfg.guild_id);
+                if let Err(e) = crate::discord::commands::server_stats::update_guild_stats(ctx, data, guild_id).await {
+                    eprintln!("Failed to update stats for guild {}: {}", cfg.guild_id, e);
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("Failed to load server stats configs: {}", e);
+        }
+    }
 }

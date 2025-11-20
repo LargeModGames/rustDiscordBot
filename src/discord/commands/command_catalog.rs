@@ -3,5 +3,7 @@
 
 pub mod leveling;
 
+pub mod server_stats;
+
 // Add a new module for bot presence management
 pub mod presence;
