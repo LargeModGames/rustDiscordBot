@@ -12,3 +12,6 @@ pub mod timezones;
 
 #[path = "logging/mod.rs"]
 pub mod logging;
+
+#[path = "github/github_service.rs"]
+pub mod github;
