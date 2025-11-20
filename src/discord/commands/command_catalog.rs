@@ -9,3 +9,5 @@ pub mod server_stats;
 pub mod presence;
 
 pub mod timezones;
+
+pub mod github;

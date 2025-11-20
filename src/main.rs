@@ -21,6 +21,7 @@ mod discord;
 mod infra;
 
 use crate::core::leveling::{LevelingService, MessageContentStats};
+use crate::core::github::GithubService;
 use crate::core::logging::{LoggingService, TrackedMessage};
 use crate::core::server_stats::ServerStatsService;
 use crate::core::timezones::TimezoneService;
@@ -29,9 +30,12 @@ use crate::discord::commands::server_stats::update_guild_stats;
 use crate::discord::leveling_announcements::send_level_up_embed;
 use crate::discord::logging::events as logging_events;
 use crate::discord::{Data, Error};
+use crate::discord::github::dispatcher as github_dispatcher;
 use crate::infra::leveling::SqliteXpStore;
 use crate::infra::logging::sqlite_store::SqliteLogStore;
 use crate::infra::server_stats::JsonServerStatsStore;
+use crate::infra::github::file_store::GithubFileStore;
+use crate::infra::github::github_client::GithubApiClient;
 use poise::serenity_prelude as serenity;
 
 /// Event handler for non-command Discord events.
@@ -275,12 +279,24 @@ async fn main() {
         .expect("Failed to migrate logging DB");
     let logging_service = Arc::new(LoggingService::new(log_store));
 
+    // GitHub tracking service (polls commits/issues across repos)
+    let github_token = std::env::var("GITHUB_TOKEN").ok();
+    let github_client =
+        GithubApiClient::new(github_token).expect("Failed to create GitHub API client");
+    let github_store = GithubFileStore::new(format!("{}/github_config.json", data_dir));
+    let github_service = Arc::new(
+        GithubService::new(github_client, github_store)
+            .await
+            .expect("Failed to initialize GitHub tracking service"),
+    );
+
     // Create the data structure that will be shared across all commands
     let data = Data {
         leveling: Arc::clone(&leveling_service),
         server_stats: Arc::clone(&stats_service),
         timezones: Arc::clone(&timezone_service),
         logging: Arc::clone(&logging_service),
+        github: Arc::clone(&github_service),
     };
 
     // ========================================================================
@@ -308,6 +324,7 @@ async fn main() {
                 discord::commands::server_stats::serverstats(),
                 discord::commands::timezones::timezones(),
                 crate::discord::logging::commands::logging(),
+                discord::commands::github::github(),
             ],
             // Event handler for messages and other events
             event_handler: |ctx, event, framework, data| {
@@ -359,6 +376,27 @@ async fn main() {
                 println!("✅ Commands registered!");
                 println!("🚀 Bot is ready!");
                 presence::on_ready(ctx, &data).await;
+
+                // Background GitHub poller (commits, issues). Runs every ~2 minutes.
+                let github_service = Arc::clone(&data.github);
+                let github_http = ctx.http.clone();
+                tokio::spawn(async move {
+                    use std::time::Duration as StdDuration;
+                    use tokio::time::sleep;
+
+                    loop {
+                        match github_service.poll_updates().await {
+                            Ok(updates) => {
+                                if !updates.is_empty() {
+                                    github_dispatcher::send_updates(&github_http, updates).await;
+                                }
+                            }
+                            Err(err) => tracing::warn!("GitHub poll failed: {}", err),
+                        }
+
+                        sleep(StdDuration::from_secs(120)).await;
+                    }
+                });
 
                 // Spawn a background task to sweep guild members daily for booster tracking
                 let leveling_clone = Arc::clone(&data.leveling);

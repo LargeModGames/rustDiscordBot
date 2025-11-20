@@ -9,9 +9,12 @@
 
 use crate::core::leveling::achievements::get_all_achievements;
 use crate::core::leveling::{Difficulty, LevelingService, XpSource};
+use crate::core::github::GithubService;
 use crate::core::logging::LoggingService;
 use crate::core::server_stats::ServerStatsService;
 use crate::core::timezones::TimezoneService;
+use crate::infra::github::file_store::GithubFileStore;
+use crate::infra::github::github_client::GithubApiClient;
 use crate::infra::leveling::SqliteXpStore;
 use crate::infra::logging::sqlite_store::SqliteLogStore;
 use crate::infra::server_stats::JsonServerStatsStore;
@@ -365,6 +368,7 @@ pub struct Data {
     pub server_stats: Arc<ServerStatsService<JsonServerStatsStore>>,
     pub timezones: Arc<TimezoneService>,
     pub logging: Arc<LoggingService<SqliteLogStore>>,
+    pub github: Arc<GithubService<GithubApiClient, GithubFileStore>>,
 }
 
 #[derive(Debug, Clone, Copy, poise::ChoiceParameter)]
