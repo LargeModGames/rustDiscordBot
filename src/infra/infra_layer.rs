@@ -9,3 +9,6 @@ pub mod server_stats;
 
 #[path = "logging/mod.rs"]
 pub mod logging;
+
+#[path = "github/mod.rs"]
+pub mod github;
