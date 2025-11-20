@@ -108,21 +108,11 @@ pub struct DailyGoal {
     pub bonus_awarded_to: Vec<u64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MessageContentStats {
     pub has_image: bool,
     pub is_long: bool,
     pub has_link: bool,
-}
-
-impl Default for MessageContentStats {
-    fn default() -> Self {
-        Self {
-            has_image: false,
-            is_long: false,
-            has_link: false,
-        }
-    }
 }
 
 impl UserProfile {
@@ -508,11 +498,9 @@ impl<S: XpStore> LevelingService<S> {
                 let days = (Utc::now() - first_date).num_days();
                 profile.boost_days = days.max(0) as u64;
             }
-        } else {
-            if profile.first_boost_date.is_some() {
-                profile.first_boost_date = None;
-                profile.boost_days = 0;
-            }
+        } else if profile.first_boost_date.is_some() {
+            profile.first_boost_date = None;
+            profile.boost_days = 0;
         }
 
         // Check achievements (e.g. booster badge)
@@ -904,7 +892,7 @@ impl<S: XpStore> LevelingService<S> {
             // Update rank improvement
             if previous_rank != 999 && previous_rank > rank {
                 let improvement = previous_rank - rank;
-                if improvement as u32 > profile.rank_improvement {
+                if improvement > profile.rank_improvement {
                     profile.rank_improvement = improvement;
                 }
             }
@@ -987,7 +975,7 @@ impl<S: XpStore> LevelingService<S> {
             Some(g) => g,
             None => DailyGoal {
                 date: now.date_naive().to_string(),
-                target: self.calculate_daily_goal_target(member_count as u64),
+                target: self.calculate_daily_goal_target(member_count),
                 progress: 0,
                 claimers: vec![],
                 completed: false,
@@ -999,7 +987,7 @@ impl<S: XpStore> LevelingService<S> {
         if daily_goal.date != now.date_naive().to_string() {
             daily_goal = DailyGoal {
                 date: now.date_naive().to_string(),
-                target: self.calculate_daily_goal_target(member_count as u64),
+                target: self.calculate_daily_goal_target(member_count),
                 progress: 0,
                 claimers: vec![],
                 completed: false,
@@ -1008,7 +996,7 @@ impl<S: XpStore> LevelingService<S> {
         }
 
         // Add claimer if not present
-        if !daily_goal.claimers.iter().any(|id| *id == user_id) {
+        if !daily_goal.claimers.contains(&user_id) {
             daily_goal.claimers.push(user_id);
             daily_goal.progress = daily_goal.claimers.len() as u64;
         }
@@ -1024,11 +1012,7 @@ impl<S: XpStore> LevelingService<S> {
         if daily_goal.completed {
             let mut newly_awarded: Vec<u64> = Vec::new();
             for claimer_id in daily_goal.claimers.clone() {
-                if !daily_goal
-                    .bonus_awarded_to
-                    .iter()
-                    .any(|id| *id == claimer_id)
-                {
+                if !daily_goal.bonus_awarded_to.contains(&claimer_id) {
                     // award
                     let mut claimer_profile =
                         match self.store.get_user_profile(claimer_id, guild_id).await? {
