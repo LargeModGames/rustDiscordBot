@@ -6,3 +6,6 @@ pub mod leveling;
 
 #[path = "server_stats/mod.rs"]
 pub mod server_stats;
+
+#[path = "timezones/timezone_service.rs"]
+pub mod timezones;
