@@ -77,8 +77,8 @@ impl TimezoneService {
 
                 let twelve_hour = now.format("%I:%M %p").to_string();
                 // lstrip("0") logic: if starts with 0, remove it.
-                let twelve_hour = if twelve_hour.starts_with('0') {
-                    twelve_hour[1..].to_string()
+                let twelve_hour = if let Some(stripped) = twelve_hour.strip_prefix('0') {
+                    stripped.to_string()
                 } else {
                     twelve_hour
                 };
