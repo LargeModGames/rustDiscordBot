@@ -1260,6 +1260,40 @@ mod tests {
                 "Noop store should not be used".to_string(),
             ))
         }
+
+        async fn get_user_profile(
+            &self,
+            _: u64,
+            _: u64,
+        ) -> Result<Option<UserProfile>, LevelingError> {
+            Err(LevelingError::StorageError(
+                "Noop store should not be used".to_string(),
+            ))
+        }
+
+        async fn save_user_profile(&self, _: UserProfile) -> Result<(), LevelingError> {
+            Err(LevelingError::StorageError(
+                "Noop store should not be used".to_string(),
+            ))
+        }
+
+        async fn get_all_profiles(&self, _: u64) -> Result<Vec<UserProfile>, LevelingError> {
+            Err(LevelingError::StorageError(
+                "Noop store should not be used".to_string(),
+            ))
+        }
+
+        async fn get_daily_goal(&self, _: u64) -> Result<Option<DailyGoal>, LevelingError> {
+            Err(LevelingError::StorageError(
+                "Noop store should not be used".to_string(),
+            ))
+        }
+
+        async fn save_daily_goal(&self, _: u64, _: DailyGoal) -> Result<(), LevelingError> {
+            Err(LevelingError::StorageError(
+                "Noop store should not be used".to_string(),
+            ))
+        }
     }
 
     fn make_service() -> LevelingService<NoopStore> {
@@ -1272,7 +1306,7 @@ mod tests {
 
         assert_eq!(service.calculate_level(0), 1);
         assert_eq!(service.calculate_level(50), 1);
-        assert_eq!(service.calculate_level(100), 1);
+        assert_eq!(service.calculate_level(100), 2);
         assert_eq!(service.calculate_level(200), 2);
         assert_eq!(service.calculate_level(450), 3);
     }
@@ -1281,9 +1315,9 @@ mod tests {
     fn test_xp_for_next_level() {
         let service = make_service();
 
-        assert_eq!(service.xp_for_next_level(1), 200);
-        assert_eq!(service.xp_for_next_level(2), 450);
-        assert_eq!(service.xp_for_next_level(3), 800);
+        assert_eq!(service.xp_for_next_level(1), 100);
+        assert_eq!(service.xp_for_next_level(2), 282); // floor(100 * 2^1.5)
+        assert_eq!(service.xp_for_next_level(3), 519); // floor(100 * 3^1.5)
     }
 
     #[test]
@@ -1300,5 +1334,169 @@ mod tests {
 
         let invalid_id = LevelingError::InvalidId;
         assert_eq!(invalid_id.to_string(), "Invalid user or guild ID");
+    }
+
+    #[tokio::test]
+    async fn test_claim_daily_awards_xp_and_streaks() {
+        // Use the real in-memory store for behavior
+        let store = crate::infra::leveling::InMemoryXpStore::new();
+        let service = LevelingService::new(store);
+
+        let user_id = 1u64;
+        let guild_id = 1u64;
+
+        // First claim
+        let (xp, levelup) = service
+            .claim_daily(user_id, guild_id, false, 1)
+            .await
+            .unwrap();
+        assert!(
+            xp >= LevelingService::<crate::infra::leveling::InMemoryXpStore>::BASE_DAILY_REWARD
+        );
+        assert!(levelup.is_none());
+
+        // Second claim same day should return 0
+        let (xp2, _) = service
+            .claim_daily(user_id, guild_id, false, 1)
+            .await
+            .unwrap();
+        assert_eq!(xp2, 0);
+    }
+
+    #[tokio::test]
+    async fn test_process_message_cooldown() {
+        let store = crate::infra::leveling::InMemoryXpStore::new();
+        let service = LevelingService::new(store);
+        let user_id = 100u64;
+        let guild_id = 11u64;
+
+        // First message should award XP
+        let res = service
+            .process_message(user_id, guild_id, false, None)
+            .await;
+        assert!(res.is_ok());
+
+        // Second message within cooldown should return OnCooldown
+        let res2 = service
+            .process_message(user_id, guild_id, false, None)
+            .await;
+        assert!(matches!(res2, Err(LevelingError::OnCooldown(_))));
+    }
+
+    #[tokio::test]
+    async fn test_process_message_boost_multiplier() {
+        let store = crate::infra::leveling::InMemoryXpStore::new();
+        let mut config = LevelingConfig::default();
+        // Use a fixed roll so we can test exact values
+        config.xp_per_message_min = 10;
+        config.xp_per_message_max = 10;
+        config.cooldown = Duration::from_secs(0);
+        let service = LevelingService::with_config(store, config);
+
+        let user_id = 999u64;
+        let guild_id = 9u64;
+
+        // Non-boosted message
+        let res = service
+            .process_message(user_id, guild_id, false, None)
+            .await
+            .unwrap();
+        assert!(res.is_none()); // 10 XP shouldn't reach a new level
+
+        // Boosted message should give 15 XP instead of 10
+        let res2 = service
+            .process_message(user_id, guild_id, true, None)
+            .await
+            .unwrap();
+        assert!(res2.is_none());
+        let profile = service.get_user_profile(user_id, guild_id).await.unwrap();
+        assert!(profile.total_xp >= 25);
+    }
+
+    #[tokio::test]
+    async fn test_award_xp_records_event_and_achievements() {
+        let store = crate::infra::leveling::InMemoryXpStore::new();
+        let service = LevelingService::new(store);
+        let user_id = 33u64;
+        let guild_id = 12u64;
+
+        // Award XP via award_xp; ensure xp_history gets an event and achievements may be awarded
+        let _ = service
+            .award_xp(user_id, guild_id, 1000, XpSource::Message)
+            .await
+            .unwrap();
+        // Level change or no is not important; check profile
+        let profile = service.get_user_profile(user_id, guild_id).await.unwrap();
+        assert!(profile.total_xp >= 1000);
+        assert!(!profile.xp_history.is_empty());
+        // xp_collector achievement requires 1000 total XP
+        assert!(profile.achievements.iter().any(|id| id == "xp_collector"));
+    }
+
+    #[tokio::test]
+    async fn test_increment_command_count_achievements() {
+        let store = crate::infra::leveling::InMemoryXpStore::new();
+        let service = LevelingService::new(store);
+        let user_id = 55u64;
+        let guild_id = 22u64;
+
+        // Increment command count 25 times to earn command_novice
+        for _ in 0..25 {
+            let _ = service.increment_command_count(user_id, guild_id).await;
+        }
+
+        let profile = service.get_user_profile(user_id, guild_id).await.unwrap();
+        assert!(profile.total_commands_used >= 25);
+        assert!(profile.achievements.iter().any(|id| id == "command_novice"));
+    }
+
+    #[tokio::test]
+    async fn test_message_content_stats_counters() {
+        let store = crate::infra::leveling::InMemoryXpStore::new();
+        let service = LevelingService::new(store);
+        let user_id = 66u64;
+        let guild_id = 33u64;
+
+        let stats = MessageContentStats {
+            has_image: true,
+            is_long: true,
+            has_link: true,
+        };
+        let _ = service
+            .process_message(user_id, guild_id, false, Some(stats))
+            .await
+            .unwrap();
+
+        let profile = service.get_user_profile(user_id, guild_id).await.unwrap();
+        assert_eq!(profile.images_shared, 1);
+        assert_eq!(profile.long_messages, 1);
+        assert_eq!(profile.links_shared, 1);
+    }
+
+    #[tokio::test]
+    async fn test_claim_daily_awards_goal_bonus() {
+        let store = crate::infra::leveling::InMemoryXpStore::new();
+        let service = LevelingService::new(store);
+
+        let user_id = 99u64;
+        let guild_id = 11u64;
+
+        // member_count=1 -> target = 1, should cause immediate completion and award goal bonus
+        let (xp, _levelup) = service
+            .claim_daily(user_id, guild_id, false, 1)
+            .await
+            .unwrap();
+        // xp must include base daily reward and the goal bonus
+        assert!(
+            xp >= LevelingService::<crate::infra::leveling::InMemoryXpStore>::BASE_DAILY_REWARD
+                + LevelingService::<crate::infra::leveling::InMemoryXpStore>::GOAL_BONUS_XP
+        );
+        // Verify profile reflects bonus
+        let profile = service.get_user_profile(user_id, guild_id).await.unwrap();
+        assert!(
+            profile.total_xp
+                >= LevelingService::<crate::infra::leveling::InMemoryXpStore>::BASE_DAILY_REWARD
+                    + LevelingService::<crate::infra::leveling::InMemoryXpStore>::GOAL_BONUS_XP
+        );
     }
 }
