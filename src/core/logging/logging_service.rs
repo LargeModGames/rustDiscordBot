@@ -25,6 +25,15 @@ pub struct LoggingService<S: LogConfigStore> {
     message_cache: DashMap<u64, TrackedMessage>,
 }
 
+pub struct VoiceUpdateParams {
+    pub guild_id: u64,
+    pub member_id: u64,
+    pub old_channel_id: Option<u64>,
+    pub new_channel_id: Option<u64>,
+    pub old_channel_members: Vec<u64>,
+    pub new_channel_members: Vec<u64>,
+}
+
 impl<S: LogConfigStore> LoggingService<S> {
     pub fn new(store: S) -> Self {
         Self {
@@ -87,14 +96,16 @@ impl<S: LogConfigStore> LoggingService<S> {
 
     pub async fn process_voice_update(
         &self,
-        guild_id: u64,
-        member_id: u64,
-        old_channel_id: Option<u64>,
-        new_channel_id: Option<u64>,
-        old_channel_members: Vec<u64>, // IDs of members in old channel AFTER move
-        new_channel_members: Vec<u64>, // IDs of members in new channel AFTER move
+        params: VoiceUpdateParams,
         get_member_mention: impl Fn(u64) -> String, // Callback to get mentions
     ) -> Result<Vec<LogEvent>> {
+        let guild_id = params.guild_id;
+        let member_id = params.member_id;
+        let old_channel_id = params.old_channel_id;
+        let new_channel_id = params.new_channel_id;
+        let old_channel_members = params.old_channel_members;
+        let new_channel_members = params.new_channel_members;
+
         let mut events = Vec::new();
 
         let config = self.store.get_config(guild_id).await?;

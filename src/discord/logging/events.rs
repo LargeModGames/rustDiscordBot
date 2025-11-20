@@ -54,20 +54,22 @@ pub async fn handle_voice_state_update(
                 .collect()
         };
 
-        let old = old_channel_id.map(|id| get_members(id)).unwrap_or_default();
-        let new = new_channel_id.map(|id| get_members(id)).unwrap_or_default();
+        let old = old_channel_id.map(&get_members).unwrap_or_default();
+        let new = new_channel_id.map(&get_members).unwrap_or_default();
         (old, new)
     };
 
     let events = data
         .logging
         .process_voice_update(
-            guild_id,
-            user_id,
-            old_channel_id,
-            new_channel_id,
-            old_members,
-            new_members,
+            crate::core::logging::logging_service::VoiceUpdateParams {
+                guild_id,
+                member_id: user_id,
+                old_channel_id,
+                new_channel_id,
+                old_channel_members: old_members,
+                new_channel_members: new_members,
+            },
             |uid| format!("<@{}>", uid),
         )
         .await?;

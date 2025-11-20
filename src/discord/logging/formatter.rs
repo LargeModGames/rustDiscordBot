@@ -165,22 +165,18 @@ pub fn format_log_event(event: &LogEvent) -> CreateEmbed {
         } => {
             let before_display = if before_content.is_empty() {
                 "*No content*"
+            } else if before_content.len() > 1024 {
+                &before_content[..1024]
             } else {
-                if before_content.len() > 1024 {
-                    &before_content[..1024]
-                } else {
-                    before_content
-                }
+                before_content
             };
 
             let after_display = if after_content.is_empty() {
                 "*No content*"
+            } else if after_content.len() > 1024 {
+                &after_content[..1024]
             } else {
-                if after_content.len() > 1024 {
-                    &after_content[..1024]
-                } else {
-                    after_content
-                }
+                after_content
             };
 
             let mut embed = CreateEmbed::default()
