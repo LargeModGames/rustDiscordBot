@@ -242,7 +242,7 @@ impl XpStore for InMemoryXpStore {
         Ok(self
             .data
             .get(&key)
-            .and_then(|entry| Some(entry.profile.clone())))
+            .map(|entry| entry.profile.clone()))
     }
 
     async fn save_user_profile(&self, profile: UserProfile) -> Result<(), LevelingError> {
