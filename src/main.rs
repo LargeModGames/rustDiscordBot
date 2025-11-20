@@ -21,13 +21,16 @@ mod discord;
 mod infra;
 
 use crate::core::leveling::{LevelingService, MessageContentStats};
+use crate::core::logging::{LoggingService, TrackedMessage};
 use crate::core::server_stats::ServerStatsService;
 use crate::core::timezones::TimezoneService;
 use crate::discord::commands::presence;
 use crate::discord::commands::server_stats::update_guild_stats;
 use crate::discord::leveling_announcements::send_level_up_embed;
+use crate::discord::logging::events as logging_events;
 use crate::discord::{Data, Error};
 use crate::infra::leveling::SqliteXpStore;
+use crate::infra::logging::sqlite_store::SqliteLogStore;
 use crate::infra::server_stats::JsonServerStatsStore;
 use poise::serenity_prelude as serenity;
 
@@ -113,15 +116,54 @@ async fn event_handler(
                     }
                 }
             }
+
+            // Cache the message for logging so delete/edit events are reliable even when
+            // Serenity's cache misses it.
+            if let Some(guild_id) = new_message.guild_id {
+                let tracked = TrackedMessage {
+                    message_id: new_message.id.get(),
+                    guild_id: guild_id.get(),
+                    channel_id: new_message.channel_id.get(),
+                    author_id: new_message.author.id.get(),
+                    author_name: new_message.author.name.clone(),
+                    content: new_message.content.clone(),
+                    attachments: new_message
+                        .attachments
+                        .iter()
+                        .map(|a| a.filename.clone())
+                        .collect(),
+                    avatar_url: new_message.author.avatar_url(),
+                };
+
+                data.logging.remember_message(tracked);
+            }
         }
         serenity::FullEvent::GuildMemberAddition { new_member } => {
             if let Err(e) = update_guild_stats(ctx, data, new_member.guild_id).await {
                 eprintln!("Error updating stats on join: {}", e);
             }
+            if let Err(e) = logging_events::handle_member_join(ctx, data, new_member).await {
+                tracing::error!("Error handling member join log: {}", e);
+            }
         }
-        serenity::FullEvent::GuildMemberRemoval { guild_id, .. } => {
+        serenity::FullEvent::GuildMemberRemoval {
+            guild_id,
+            user,
+            member_data_if_available,
+        } => {
             if let Err(e) = update_guild_stats(ctx, data, *guild_id).await {
                 eprintln!("Error updating stats on leave: {}", e);
+            }
+            if let Err(e) = logging_events::handle_member_remove(
+                ctx,
+                data,
+                *guild_id,
+                user,
+                member_data_if_available.as_ref(),
+            )
+            .await
+            {
+                tracing::error!("Error handling member remove log: {}", e);
             }
         }
         serenity::FullEvent::GuildUpdate {
@@ -130,6 +172,47 @@ async fn event_handler(
         } => {
             if let Err(e) = update_guild_stats(ctx, data, new_data.id).await {
                 eprintln!("Error updating stats on guild update: {}", e);
+            }
+        }
+        serenity::FullEvent::MessageDelete {
+            channel_id,
+            deleted_message_id,
+            guild_id,
+        } => {
+            if let Err(e) = logging_events::handle_message_delete(
+                ctx,
+                data,
+                *channel_id,
+                *deleted_message_id,
+                *guild_id,
+            )
+            .await
+            {
+                tracing::error!("Error handling message delete: {}", e);
+            }
+        }
+        serenity::FullEvent::MessageUpdate {
+            old_if_available,
+            new,
+            event,
+        } => {
+            if let Err(e) = logging_events::handle_message_update(
+                ctx,
+                data,
+                old_if_available.as_ref(),
+                new.as_ref(),
+                event,
+            )
+            .await
+            {
+                tracing::error!("Error handling message update: {}", e);
+            }
+        }
+        serenity::FullEvent::VoiceStateUpdate { old, new } => {
+            if let Err(e) =
+                logging_events::handle_voice_state_update(ctx, data, old.as_ref(), new).await
+            {
+                tracing::error!("Error handling voice state update: {}", e);
             }
         }
 
@@ -174,11 +257,23 @@ async fn main() {
 
     let timezone_service = Arc::new(TimezoneService::new());
 
+    let log_pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .connect("sqlite://logging.db?mode=rwc")
+        .await
+        .expect("Failed to connect to logging DB");
+    let log_store = SqliteLogStore::new(log_pool);
+    log_store
+        .migrate()
+        .await
+        .expect("Failed to migrate logging DB");
+    let logging_service = Arc::new(LoggingService::new(log_store));
+
     // Create the data structure that will be shared across all commands
     let data = Data {
         leveling: Arc::clone(&leveling_service),
         server_stats: Arc::clone(&stats_service),
         timezones: Arc::clone(&timezone_service),
+        logging: Arc::clone(&logging_service),
     };
 
     // ========================================================================
@@ -205,6 +300,7 @@ async fn main() {
                 discord::commands::leveling::achievements(),
                 discord::commands::server_stats::serverstats(),
                 discord::commands::timezones::timezones(),
+                crate::discord::logging::commands::logging(),
             ],
             // Event handler for messages and other events
             event_handler: |ctx, event, framework, data| {
@@ -239,6 +335,19 @@ async fn main() {
                 // For faster development, use register_in_guild instead:
                 // poise::builtins::register_in_guild(ctx, &framework.options().commands, guild_id).await?;
                 poise::builtins::register_globally(ctx, &framework.options().commands).await?;
+
+                // Register commands in the testing server to ensure they are always up to date immediately
+                // NOTE: This causes duplicate commands in the testing server (one global, one guild-specific).
+                // Commenting this out to avoid duplicates. If you need instant updates during dev, uncomment this
+                // and comment out register_globally.
+
+                // Explicitly clear guild commands to remove duplicates from previous runs
+                poise::builtins::register_in_guild(
+                    ctx,
+                    &[] as &[poise::Command<Data, Error>], // Empty list clears guild commands
+                    serenity::GuildId::new(1432001978447167611),
+                )
+                .await?;
 
                 println!("✅ Commands registered!");
                 println!("🚀 Bot is ready!");
@@ -294,8 +403,12 @@ async fn main() {
         .build();
 
     // Create the client and start the bot
+    let mut settings = serenity::cache::Settings::default();
+    settings.max_messages = 10000;
+
     let mut client = serenity::ClientBuilder::new(token, intents)
         .framework(framework)
+        .cache_settings(settings)
         .await
         .expect("Error creating client");
 

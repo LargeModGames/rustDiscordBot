@@ -9,3 +9,6 @@ pub mod server_stats;
 
 #[path = "timezones/timezone_service.rs"]
 pub mod timezones;
+
+#[path = "logging/mod.rs"]
+pub mod logging;

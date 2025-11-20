@@ -6,3 +6,6 @@ pub mod leveling;
 
 #[path = "server_stats/mod.rs"]
 pub mod server_stats;
+
+#[path = "logging/mod.rs"]
+pub mod logging;

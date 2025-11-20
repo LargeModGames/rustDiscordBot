@@ -584,7 +584,7 @@ impl<S: XpStore> LevelingService<S> {
                         .min(command_progress)
                         .min(1.0);
                     // Represent as x/100 so the bar shows percent complete.
-                    ( (progress * 100.0) as u64, 100, Some(progress) )
+                    ((progress * 100.0) as u64, 100, Some(progress))
                 }
 
                 // Content Creator
@@ -617,8 +617,8 @@ impl<S: XpStore> LevelingService<S> {
             };
 
             if target > 0 {
-                let progress = progress_override
-                    .unwrap_or_else(|| (current as f64 / target as f64).min(1.0));
+                let progress =
+                    progress_override.unwrap_or_else(|| (current as f64 / target as f64).min(1.0));
                 candidates.push((achievement, progress, current, target));
             }
         }
