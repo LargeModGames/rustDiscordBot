@@ -20,13 +20,13 @@ mod discord;
 #[path = "infra/infra_layer.rs"]
 mod infra;
 
-use crate::core::leveling::LevelingService;
+use crate::core::leveling::{LevelingService, MessageContentStats};
 use crate::core::server_stats::ServerStatsService;
 use crate::discord::commands::presence;
 use crate::discord::commands::server_stats::update_guild_stats;
 use crate::discord::leveling_announcements::send_level_up_embed;
 use crate::discord::{Data, Error};
-use crate::infra::leveling::InMemoryXpStore;
+use crate::infra::leveling::JsonXpStore;
 use crate::infra::server_stats::JsonServerStatsStore;
 use poise::serenity_prelude as serenity;
 
@@ -51,7 +51,38 @@ async fn event_handler(
                 let guild_id = guild_id.get();
 
                 // Try to award XP for this message
-                match data.leveling.process_message(user_id, guild_id).await {
+                // Detect Nitro boosting (best-effort using cache). If unavailable, assume false.
+                let boosted = ctx
+                    .cache
+                    .guild(serenity::GuildId::from(guild_id))
+                    .and_then(|g| g.members.get(&serenity::UserId::from(user_id)).cloned())
+                    .and_then(|m| m.premium_since)
+                    .is_some();
+
+                // Analyze message content
+                let has_image = new_message.attachments.iter().any(|a| {
+                    let name = a.filename.to_lowercase();
+                    name.ends_with(".png")
+                        || name.ends_with(".jpg")
+                        || name.ends_with(".jpeg")
+                        || name.ends_with(".gif")
+                        || name.ends_with(".webp")
+                });
+                let is_long = new_message.content.len() >= 100;
+                let has_link = new_message.content.contains("http://")
+                    || new_message.content.contains("https://");
+
+                let content_stats = MessageContentStats {
+                    has_image,
+                    is_long,
+                    has_link,
+                };
+
+                match data
+                    .leveling
+                    .process_message(user_id, guild_id, boosted, Some(content_stats))
+                    .await
+                {
                     Ok(Some(level_up)) => {
                         tracing::info!(
                             user_id = level_up.user_id,
@@ -63,7 +94,9 @@ async fn event_handler(
                         );
 
                         // User leveled up! Announce it
-                        if let Err(err) = send_level_up_embed(ctx, new_message, data, &level_up).await {
+                        if let Err(err) =
+                            send_level_up_embed(ctx, new_message, data, &level_up).await
+                        {
                             tracing::warn!("Failed to send level-up embed: {err}");
                         }
                     }
@@ -90,11 +123,15 @@ async fn event_handler(
                 eprintln!("Error updating stats on leave: {}", e);
             }
         }
-        serenity::FullEvent::GuildUpdate { old_data_if_available: _, new_data } => {
-             if let Err(e) = update_guild_stats(ctx, data, new_data.id).await {
+        serenity::FullEvent::GuildUpdate {
+            old_data_if_available: _,
+            new_data,
+        } => {
+            if let Err(e) = update_guild_stats(ctx, data, new_data.id).await {
                 eprintln!("Error updating stats on guild update: {}", e);
             }
         }
+
         _ => {}
     }
 
@@ -120,20 +157,22 @@ async fn main() {
     // Create our services with their dependencies.
     // This is the "composition root" where we wire everything together.
 
-    // Create the in-memory XP store
-    let xp_store = InMemoryXpStore::new();
+    use std::sync::Arc;
 
-    // Create the leveling service with the store injected
-    let leveling_service = LevelingService::new(xp_store);
+    // Create the JSON-backed XP store
+    let xp_store = JsonXpStore::new("leveling_data.json");
+
+    // Create the leveling service with the store injected and wrap in Arc
+    let leveling_service = Arc::new(LevelingService::new(xp_store));
 
     // Create server stats store
     let stats_store = JsonServerStatsStore::new("server_stats.json");
-    let stats_service = ServerStatsService::new(stats_store);
+    let stats_service = Arc::new(ServerStatsService::new(stats_store));
 
     // Create the data structure that will be shared across all commands
     let data = Data {
-        leveling: leveling_service,
-        server_stats: stats_service,
+        leveling: Arc::clone(&leveling_service),
+        server_stats: Arc::clone(&stats_service),
     };
 
     // ========================================================================
@@ -151,13 +190,37 @@ async fn main() {
             // Register all our commands here
             commands: vec![
                 discord::commands::leveling::level(),
+                discord::commands::leveling::profile(),
+                discord::commands::leveling::xpstats(),
+                discord::commands::leveling::next_achievement(),
                 discord::commands::leveling::leaderboard(),
                 discord::commands::leveling::give_xp(),
+                discord::commands::leveling::daily_claim(),
+                discord::commands::leveling::achievements(),
                 discord::commands::server_stats::serverstats(),
             ],
             // Event handler for messages and other events
             event_handler: |ctx, event, framework, data| {
                 Box::pin(event_handler(ctx, event, framework, data))
+            },
+            // Hook to run after every command
+            post_command: |ctx| {
+                Box::pin(async move {
+                    if let Some(guild_id) = ctx.guild_id() {
+                        let user_id = ctx.author().id.get();
+                        let guild_id = guild_id.get();
+
+                        // Increment command count and check achievements
+                        if let Err(e) = ctx
+                            .data()
+                            .leveling
+                            .increment_command_count(user_id, guild_id)
+                            .await
+                        {
+                            tracing::error!("Failed to increment command count: {}", e);
+                        }
+                    }
+                })
             },
             ..Default::default()
         })
@@ -173,6 +236,49 @@ async fn main() {
                 println!("✅ Commands registered!");
                 println!("🚀 Bot is ready!");
                 presence::on_ready(ctx, &data).await;
+
+                // Spawn a background task to sweep guild members daily for booster tracking
+                let leveling_clone = Arc::clone(&data.leveling);
+                let http = ctx.http.clone();
+                let cache = ctx.cache.clone();
+                tokio::spawn(async move {
+                    use std::time::Duration as StdDuration;
+                    use tokio::time::sleep;
+
+                    loop {
+                        tracing::info!("Daily booster sweep starting");
+
+                        // Refresh guild list every run using the cache to avoid missing new guilds
+                        let guild_ids: Vec<u64> = cache.guilds().iter().map(|g| g.get()).collect();
+
+                        for guild_id_u64 in guild_ids {
+                            // Fetch members using the HTTP API to avoid sharing non-Send cache references between threads
+                            if let Ok(members) =
+                                http.get_guild_members(guild_id_u64.into(), None, Some(1000)).await
+                            {
+                                for member in members {
+                                    let user_id = member.user.id.get();
+                                    let is_boosting = member.premium_since.is_some();
+                                    if let Err(e) = leveling_clone
+                                        .update_boost_status(user_id, guild_id_u64, is_boosting)
+                                        .await
+                                    {
+                                        tracing::error!(
+                                            "Failed to update boost status for {} in {}: {}",
+                                            user_id,
+                                            guild_id_u64,
+                                            e
+                                        );
+                                    }
+                                }
+                            }
+                        }
+
+                        tracing::info!("Daily booster sweep completed");
+                        // Wait 24 hours between sweeps (approx)
+                        sleep(StdDuration::from_secs(60 * 60 * 24)).await;
+                    }
+                });
 
                 Ok(data)
             })
