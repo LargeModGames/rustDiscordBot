@@ -320,11 +320,11 @@ impl LevelingConfig {
 
 impl Default for LevelingConfig {
     fn default() -> Self {
-        // Mirrors the Python implementation's XP roll but uses a lighter 10 second cooldown.
+        // Mirrors the Python implementation's XP roll: 60 second cooldown between XP awards.
         Self {
             xp_per_message_min: 15,
             xp_per_message_max: 25,
-            cooldown: Duration::from_secs(10),
+            cooldown: Duration::from_secs(60),
         }
     }
 }
