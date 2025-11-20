@@ -6,14 +6,8 @@ use poise::serenity_prelude as serenity;
 #[poise::command(
     slash_command,
     guild_only,
-    subcommands(
-        "track",
-        "track_org",
-        "remove",
-        "remove_org",
-        "list",
-        "check"
-    )
+    required_permissions = "ADMINISTRATOR",
+    subcommands("track", "track_org", "remove", "remove_org", "list", "check")
 )]
 pub async fn github(ctx: Context<'_>) -> Result<(), Error> {
     ctx.say(
@@ -30,11 +24,7 @@ pub async fn github(ctx: Context<'_>) -> Result<(), Error> {
 }
 
 /// Track a specific repository (all branches).
-#[poise::command(
-    slash_command,
-    guild_only,
-    required_permissions = "MANAGE_GUILD"
-)]
+#[poise::command(slash_command, guild_only, required_permissions = "ADMINISTRATOR")]
 pub async fn track(
     ctx: Context<'_>,
     #[description = "Repository owner (user or org)"] owner: String,
@@ -60,11 +50,7 @@ pub async fn track(
 }
 
 /// Track every repository inside an organization.
-#[poise::command(
-    slash_command,
-    guild_only,
-    required_permissions = "MANAGE_GUILD"
-)]
+#[poise::command(slash_command, guild_only, required_permissions = "ADMINISTRATOR")]
 pub async fn track_org(
     ctx: Context<'_>,
     #[description = "Organization login"] org: String,
@@ -99,11 +85,7 @@ pub async fn track_org(
 }
 
 /// Stop tracking a single repository.
-#[poise::command(
-    slash_command,
-    guild_only,
-    required_permissions = "MANAGE_GUILD"
-)]
+#[poise::command(slash_command, guild_only, required_permissions = "ADMINISTRATOR")]
 pub async fn remove(
     ctx: Context<'_>,
     #[description = "Repository owner (user or org)"] owner: String,
@@ -122,7 +104,8 @@ pub async fn remove(
         .await?;
 
     if removed {
-        ctx.say(format!("Stopped tracking `{owner}/{repo}`.")).await?;
+        ctx.say(format!("Stopped tracking `{owner}/{repo}`."))
+            .await?;
     } else {
         ctx.say("No matching repository entry found.").await?;
     }
@@ -131,11 +114,7 @@ pub async fn remove(
 }
 
 /// Stop tracking an organization.
-#[poise::command(
-    slash_command,
-    guild_only,
-    required_permissions = "MANAGE_GUILD"
-)]
+#[poise::command(slash_command, guild_only, required_permissions = "ADMINISTRATOR")]
 pub async fn remove_org(
     ctx: Context<'_>,
     #[description = "Organization login"] org: String,
@@ -156,15 +135,14 @@ pub async fn remove_org(
         ctx.say(format!("Stopped tracking organization `{org}`."))
             .await?;
     } else {
-        ctx.say("No matching organization entry found.")
-            .await?;
+        ctx.say("No matching organization entry found.").await?;
     }
 
     Ok(())
 }
 
 /// Show all tracked repositories and organizations for this guild.
-#[poise::command(slash_command, guild_only)]
+#[poise::command(slash_command, guild_only, required_permissions = "ADMINISTRATOR")]
 pub async fn list(ctx: Context<'_>) -> Result<(), Error> {
     let guild_id = ctx
         .guild_id()
@@ -173,7 +151,8 @@ pub async fn list(ctx: Context<'_>) -> Result<(), Error> {
 
     let entries = ctx.data().github.list_entries(guild_id).await;
     if entries.is_empty() {
-        ctx.say("No repositories are being tracked in this guild.").await?;
+        ctx.say("No repositories are being tracked in this guild.")
+            .await?;
         return Ok(());
     }
 
@@ -218,11 +197,7 @@ pub async fn list(ctx: Context<'_>) -> Result<(), Error> {
 }
 
 /// Force an immediate poll for this guild.
-#[poise::command(
-    slash_command,
-    guild_only,
-    required_permissions = "MANAGE_GUILD"
-)]
+#[poise::command(slash_command, guild_only, required_permissions = "ADMINISTRATOR")]
 pub async fn check(ctx: Context<'_>) -> Result<(), Error> {
     ctx.defer().await?;
     let updates = ctx.data().github.poll_updates().await?;
