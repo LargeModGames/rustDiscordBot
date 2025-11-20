@@ -235,6 +235,13 @@ async fn main() {
         "Missing DISCORD_TOKEN environment variable! Create a .env file with your bot token.",
     );
 
+    // Keep runtime databases in a dedicated folder so the repo root stays tidy.
+    let data_dir = "data";
+    std::fs::create_dir_all(data_dir)
+        .expect("Failed to create data directory for SQLite files");
+    let leveling_db_path = format!("{}/leveling.db", data_dir);
+    let logging_db_path = format!("{}/logging.db", data_dir);
+
     // ========================================================================
     // DEPENDENCY INJECTION
     // ========================================================================
@@ -244,7 +251,7 @@ async fn main() {
     use std::sync::Arc;
 
     // Create the SQLite-backed XP store
-    let xp_store = SqliteXpStore::new("leveling.db")
+    let xp_store = SqliteXpStore::new(&leveling_db_path)
         .await
         .expect("Failed to initialize SQLite store");
 
@@ -258,7 +265,7 @@ async fn main() {
     let timezone_service = Arc::new(TimezoneService::new());
 
     let log_pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .connect("sqlite://logging.db?mode=rwc")
+        .connect(&format!("sqlite://{}?mode=rwc", logging_db_path))
         .await
         .expect("Failed to connect to logging DB");
     let log_store = SqliteLogStore::new(log_pool);
