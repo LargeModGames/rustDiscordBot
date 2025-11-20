@@ -29,7 +29,7 @@ impl<S: ServerStatsStore> ServerStatsService<S> {
 
     pub async fn save_config(&self, config: ServerStatsConfig) -> Result<(), ServerStatsError> {
         // Prevent double-configuration for a single guild
-        if let Some(_) = self.store.get_config(config.guild_id).await? {
+        if self.store.get_config(config.guild_id).await?.is_some() {
             return Err(ServerStatsError::AlreadyConfigured);
         }
 

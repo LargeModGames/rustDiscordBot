@@ -22,7 +22,7 @@ pub async fn setup(ctx: Context<'_>) -> Result<(), Error> {
     ctx.defer().await?;
 
     // Check if already configured
-    if let Some(_) = ctx.data().server_stats.get_config(guild_id.get()).await? {
+    if ctx.data().server_stats.get_config(guild_id.get()).await?.is_some() {
         ctx.say("❌ Server stats are already configured for this server! Use `/serverstats remove` first if you want to re-configure.").await?;
         return Ok(());
     }
