@@ -16,7 +16,7 @@ pub async fn timezones(ctx: Context<'_>) -> Result<(), Error> {
         .timestamp(serenity::Timestamp::now());
 
     // If bot user is available, set thumbnail
-    if let Some(bot_user) = ctx.framework().bot_id.to_user(&ctx).await.ok() {
+    if let Ok(bot_user) = ctx.framework().bot_id.to_user(&ctx).await {
         embed = embed.thumbnail(bot_user.face());
     }
 

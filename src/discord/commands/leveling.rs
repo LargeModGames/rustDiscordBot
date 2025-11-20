@@ -336,7 +336,7 @@ async fn resolve_display_name(ctx: &Context<'_>, guild_id: u64, user_id: u64) ->
     if let Ok(member) = ctx
         .serenity_context()
         .http
-        .get_member(guild_id_s.into(), user_id_s.into())
+        .get_member(guild_id_s, user_id_s)
         .await
     {
         if let Some(nick) = member.nick {
@@ -346,7 +346,7 @@ async fn resolve_display_name(ctx: &Context<'_>, guild_id: u64, user_id: u64) ->
     }
 
     // Try a direct user fetch. If that succeeds, use the username.
-    if let Ok(user) = ctx.serenity_context().http.get_user(user_id_s.into()).await {
+    if let Ok(user) = ctx.serenity_context().http.get_user(user_id_s).await {
         return user.name;
     }
 
@@ -492,7 +492,7 @@ pub async fn daily_claim(ctx: Context<'_>) -> Result<(), Error> {
         .and_then(|m| m.premium_since)
         .is_some();
 
-    let member_count = ctx.guild().map(|g| g.member_count as u64).unwrap_or(0);
+    let member_count = ctx.guild().map(|g| g.member_count).unwrap_or(0);
     let (xp_award, levelup_opt) = ctx
         .data()
         .leveling
@@ -510,7 +510,7 @@ pub async fn daily_claim(ctx: Context<'_>) -> Result<(), Error> {
         let next_claim = profile.last_daily.map(|d| d + chrono::Duration::days(1));
         let time_remaining = next_claim
             .map(|t| t.signed_duration_since(now))
-            .unwrap_or_else(|| chrono::Duration::zero());
+            .unwrap_or_else(chrono::Duration::zero);
         let time_str = if time_remaining.num_seconds() <= 0 {
             "Ready soon".to_string()
         } else if time_remaining.num_minutes() < 60 {
