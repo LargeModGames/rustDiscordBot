@@ -22,11 +22,12 @@ mod infra;
 
 use crate::core::leveling::{LevelingService, MessageContentStats};
 use crate::core::server_stats::ServerStatsService;
+use crate::core::timezones::TimezoneService;
 use crate::discord::commands::presence;
 use crate::discord::commands::server_stats::update_guild_stats;
 use crate::discord::leveling_announcements::send_level_up_embed;
 use crate::discord::{Data, Error};
-use crate::infra::leveling::JsonXpStore;
+use crate::infra::leveling::SqliteXpStore;
 use crate::infra::server_stats::JsonServerStatsStore;
 use poise::serenity_prelude as serenity;
 
@@ -159,8 +160,10 @@ async fn main() {
 
     use std::sync::Arc;
 
-    // Create the JSON-backed XP store
-    let xp_store = JsonXpStore::new("leveling_data.json");
+    // Create the SQLite-backed XP store
+    let xp_store = SqliteXpStore::new("leveling.db")
+        .await
+        .expect("Failed to initialize SQLite store");
 
     // Create the leveling service with the store injected and wrap in Arc
     let leveling_service = Arc::new(LevelingService::new(xp_store));
@@ -169,10 +172,13 @@ async fn main() {
     let stats_store = JsonServerStatsStore::new("server_stats.json");
     let stats_service = Arc::new(ServerStatsService::new(stats_store));
 
+    let timezone_service = Arc::new(TimezoneService::new());
+
     // Create the data structure that will be shared across all commands
     let data = Data {
         leveling: Arc::clone(&leveling_service),
         server_stats: Arc::clone(&stats_service),
+        timezones: Arc::clone(&timezone_service),
     };
 
     // ========================================================================
@@ -198,6 +204,7 @@ async fn main() {
                 discord::commands::leveling::daily_claim(),
                 discord::commands::leveling::achievements(),
                 discord::commands::server_stats::serverstats(),
+                discord::commands::timezones::timezones(),
             ],
             // Event handler for messages and other events
             event_handler: |ctx, event, framework, data| {
@@ -253,8 +260,9 @@ async fn main() {
 
                         for guild_id_u64 in guild_ids {
                             // Fetch members using the HTTP API to avoid sharing non-Send cache references between threads
-                            if let Ok(members) =
-                                http.get_guild_members(guild_id_u64.into(), None, Some(1000)).await
+                            if let Ok(members) = http
+                                .get_guild_members(guild_id_u64.into(), None, Some(1000))
+                                .await
                             {
                                 for member in members {
                                     let user_id = member.user.id.get();

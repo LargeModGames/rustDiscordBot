@@ -10,7 +10,8 @@
 use crate::core::leveling::achievements::get_all_achievements;
 use crate::core::leveling::{Difficulty, LevelingService, XpSource};
 use crate::core::server_stats::ServerStatsService;
-use crate::infra::leveling::JsonXpStore;
+use crate::core::timezones::TimezoneService;
+use crate::infra::leveling::SqliteXpStore;
 use crate::infra::server_stats::JsonServerStatsStore;
 use poise::serenity_prelude as serenity;
 use std::collections::HashMap;
@@ -358,8 +359,9 @@ pub type Context<'a> = poise::Context<'a, Data, Error>;
 use std::sync::Arc;
 
 pub struct Data {
-    pub leveling: Arc<LevelingService<JsonXpStore>>,
+    pub leveling: Arc<LevelingService<SqliteXpStore>>,
     pub server_stats: Arc<ServerStatsService<JsonServerStatsStore>>,
+    pub timezones: Arc<TimezoneService>,
 }
 
 #[derive(Debug, Clone, Copy, poise::ChoiceParameter)]
