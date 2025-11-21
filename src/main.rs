@@ -60,6 +60,33 @@ async fn event_handler(
             // Check for bot mention for AI response
             let bot_id = ctx.cache.current_user().id;
             if new_message.mentions.iter().any(|u| u.id == bot_id) {
+                // Check if it's a question about the project
+                let content_lower = new_message.content.to_lowercase();
+                let is_project_question = content_lower.contains("project")
+                    || content_lower.contains("fiefdom")
+                    || content_lower.contains("greybeard")
+                    || content_lower.contains("studio")
+                    || content_lower.contains("apply")
+                    || content_lower.contains("application")
+                    || content_lower.contains("join")
+                    || (content_lower.contains("what") && content_lower.contains("building"))
+                    || (content_lower.contains("who") && content_lower.contains("are you"));
+
+                if is_project_question {
+                    let embed =
+                        crate::discord::commands::info::build_info_embed(ctx, new_message.guild_id)
+                            .await;
+                    if let Err(e) = new_message
+                        .channel_id
+                        .send_message(&ctx.http, serenity::CreateMessage::new().embed(embed))
+                        .await
+                    {
+                        tracing::error!("Failed to send info embed: {}", e);
+                    }
+                    // If we answered with the info embed, we skip the AI response to avoid double-replying
+                    return Ok(());
+                }
+
                 // It's a mention!
                 // Trigger typing
                 let _ = new_message.channel_id.broadcast_typing(&ctx.http).await;
@@ -460,6 +487,7 @@ async fn main() {
                 discord::commands::timezones::timezones(),
                 crate::discord::logging::commands::logging(),
                 discord::commands::github::github(),
+                discord::commands::info::info(),
             ],
             // Event handler for messages and other events
             event_handler: |ctx, event, framework, data| {

@@ -11,3 +11,5 @@ pub mod presence;
 pub mod timezones;
 
 pub mod github;
+
+pub mod info;
