@@ -10,7 +10,7 @@
 use crate::core::ai::ai_service::AiService;
 use crate::core::github::GithubService;
 use crate::core::leveling::achievements::get_all_achievements;
-use crate::core::leveling::{Difficulty, LevelingService, UserStats, XpSource};
+use crate::core::leveling::{Difficulty, LevelingService, XpSource};
 use crate::core::logging::LoggingService;
 use crate::core::server_stats::ServerStatsService;
 use crate::core::timezones::TimezoneService;
