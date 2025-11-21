@@ -20,7 +20,7 @@ pub fn change_status(ctx: &serenity::Context, song_name: &str) {
 
 /// Resets the bot's status to the default message.
 pub fn reset_status(ctx: &serenity::Context) {
-    let activity = serenity::ActivityData::playing("Building a new bot");
+    let activity = serenity::ActivityData::playing("Building Project Fiefdom");
     ctx.set_presence(Some(activity), serenity::OnlineStatus::Online);
 }
 
