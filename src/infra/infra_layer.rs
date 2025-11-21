@@ -12,3 +12,6 @@ pub mod logging;
 
 #[path = "github/mod.rs"]
 pub mod github;
+
+#[path = "ai/mod.rs"]
+pub mod ai;
