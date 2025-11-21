@@ -90,6 +90,13 @@ impl SqliteXpStore {
         .execute(&self.pool)
         .await?;
 
+        // Performance optimization for leaderboard queries
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_user_profiles_guild_xp ON user_profiles(guild_id, total_xp DESC);"
+        )
+        .execute(&self.pool)
+        .await?;
+
         Ok(())
     }
 }

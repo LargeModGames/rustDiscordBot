@@ -269,7 +269,7 @@ pub async fn leaderboard(
         return Ok(());
     }
 
-    let per_page = 10;
+    let per_page = 5;
     let total_pages = (profiles.len() + per_page - 1) / per_page;
     let mut current_page = page.unwrap_or(1).clamp(1, total_pages);
 
