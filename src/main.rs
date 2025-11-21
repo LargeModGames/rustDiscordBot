@@ -389,7 +389,7 @@ async fn main() {
     let leveling_service = Arc::new(LevelingService::new(xp_store));
 
     // Create server stats store
-    let stats_store = JsonServerStatsStore::new("server_stats.json");
+    let stats_store = JsonServerStatsStore::new("data/server_stats.json");
     let stats_service = Arc::new(ServerStatsService::new(stats_store));
 
     let timezone_service = Arc::new(TimezoneService::new());
