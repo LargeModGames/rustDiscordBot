@@ -39,6 +39,7 @@ use crate::infra::leveling::SqliteXpStore;
 use crate::infra::logging::sqlite_store::SqliteLogStore;
 use crate::infra::server_stats::JsonServerStatsStore;
 use poise::serenity_prelude as serenity;
+use std::str::FromStr;
 
 const DEFAULT_SYSTEM_PROMPT: &str = "You are a helpful AI assistant.";
 
@@ -394,8 +395,16 @@ async fn main() {
 
     let timezone_service = Arc::new(TimezoneService::new());
 
+    let log_conn_str = format!("sqlite://{}", logging_db_path);
+    let log_options = sqlx::sqlite::SqliteConnectOptions::from_str(&log_conn_str)
+        .expect("Invalid connection string")
+        .create_if_missing(true)
+        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+        .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+        .busy_timeout(std::time::Duration::from_secs(5));
+
     let log_pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .connect(&format!("sqlite://{}?mode=rwc", logging_db_path))
+        .connect_with(log_options)
         .await
         .expect("Failed to connect to logging DB");
     let log_store = SqliteLogStore::new(log_pool);

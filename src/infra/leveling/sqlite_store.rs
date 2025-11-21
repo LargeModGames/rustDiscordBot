@@ -5,6 +5,7 @@ use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::{Pool, Row, Sqlite};
 use std::collections::VecDeque;
 use std::path::Path;
+use std::str::FromStr;
 use std::time::Instant;
 
 pub struct SqliteXpStore {
@@ -28,7 +29,13 @@ impl SqliteXpStore {
             format!("sqlite://{}", database_url)
         };
 
-        let pool = SqlitePoolOptions::new().connect(&conn_str).await?;
+        let options = sqlx::sqlite::SqliteConnectOptions::from_str(&conn_str)?
+            .create_if_missing(true)
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+            .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+            .busy_timeout(std::time::Duration::from_secs(5));
+
+        let pool = SqlitePoolOptions::new().connect_with(options).await?;
 
         let store = Self { pool };
         store.migrate().await?;
