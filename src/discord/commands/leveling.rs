@@ -10,7 +10,7 @@
 use crate::core::ai::ai_service::AiService;
 use crate::core::github::GithubService;
 use crate::core::leveling::achievements::get_all_achievements;
-use crate::core::leveling::{Difficulty, LevelingService, XpSource};
+use crate::core::leveling::{Difficulty, LevelingService, UserStats, XpSource};
 use crate::core::logging::LoggingService;
 use crate::core::server_stats::ServerStatsService;
 use crate::core::timezones::TimezoneService;
@@ -249,12 +249,10 @@ pub async fn leaderboard(
     // Defer response since recalculating ranks might take a moment
     ctx.defer().await?;
 
-    // 2. Recalculate ranks and fetch current profiles
-    let all_profiles = ctx
-        .data()
-        .leveling
-        .recalculate_and_update_ranks(guild_id)
-        .await?;
+    // 2. Fetch leaderboard (read-only, fast)
+    // We fetch a large number to support pagination, but avoid the expensive
+    // O(N) write operation of recalculating rank history on every view.
+    let all_profiles = ctx.data().leveling.get_leaderboard(guild_id, 1000).await?;
 
     // Filter out bots
     let mut profiles = Vec::new();
@@ -320,7 +318,7 @@ pub async fn leaderboard(
             let leveling = &ctx.data().leveling;
             let previous_threshold = leveling.xp_for_level(stats.level);
             let next_threshold = leveling.xp_for_next_level(stats.level);
-            let xp_progress = stats.total_xp.saturating_sub(previous_threshold);
+            let xp_progress = stats.xp.saturating_sub(previous_threshold);
             let level_span = next_threshold.saturating_sub(previous_threshold);
 
             let progress_pct = if level_span > 0 {
@@ -332,14 +330,8 @@ pub async fn leaderboard(
             let bar = build_progress_bar(progress_pct, 10);
 
             description.push_str(&format!(
-                "{} **#{}** {}\nLevel {} | {} XP\n{} ({:.0}%)\n\n",
-                medal,
-                rank,
-                name_display,
-                stats.level,
-                stats.total_xp,
-                bar,
-                progress_pct * 100.0
+                "{} **#{}** {}\nLevel {} | {} XP\n{}\n\n",
+                medal, rank, name_display, stats.level, stats.xp, bar
             ));
         }
 
@@ -421,6 +413,12 @@ pub async fn leaderboard(
             _ => {}
         }
 
+        // Defer the update to prevent "Unknown interaction" errors if processing takes > 3s
+        if let Err(e) = mci.defer(&ctx.http()).await {
+            println!("Error deferring interaction: {:?}", e);
+            continue;
+        }
+
         // Rebuild the message content
         let offset = (current_page - 1) * per_page;
         let mut description = String::new();
@@ -459,7 +457,7 @@ pub async fn leaderboard(
             let leveling = &ctx.data().leveling;
             let previous_threshold = leveling.xp_for_level(stats.level);
             let next_threshold = leveling.xp_for_next_level(stats.level);
-            let xp_progress = stats.total_xp.saturating_sub(previous_threshold);
+            let xp_progress = stats.xp.saturating_sub(previous_threshold);
             let level_span = next_threshold.saturating_sub(previous_threshold);
 
             let progress_pct = if level_span > 0 {
@@ -471,14 +469,8 @@ pub async fn leaderboard(
             let bar = build_progress_bar(progress_pct, 10);
 
             description.push_str(&format!(
-                "{} **#{}** {}\nLevel {} | {} XP\n{} ({:.0}%)\n\n",
-                medal,
-                rank,
-                name_display,
-                stats.level,
-                stats.total_xp,
-                bar,
-                progress_pct * 100.0
+                "{} **#{}** {}\nLevel {} | {} XP\n{}\n\n",
+                medal, rank, name_display, stats.level, stats.xp, bar
             ));
         }
 
@@ -505,15 +497,13 @@ pub async fn leaderboard(
                 .style(serenity::ButtonStyle::Secondary),
         ])];
 
-        // Acknowledge and update the message
-        if let Err(e) = mci
-            .create_response(
-                &ctx,
-                serenity::CreateInteractionResponse::UpdateMessage(
-                    serenity::CreateInteractionResponseMessage::new()
-                        .embed(embed)
-                        .components(components),
-                ),
+        // Update the message using the handle since we deferred the interaction
+        if let Err(e) = msg
+            .edit(
+                ctx,
+                poise::CreateReply::default()
+                    .embed(embed)
+                    .components(components),
             )
             .await
         {
