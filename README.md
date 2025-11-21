@@ -38,16 +38,29 @@ See [AGENTS.md](AGENTS.md) for detailed architecture documentation.
 ### Currently Implemented
 
 - ✅ **Leveling System** - Users earn XP by chatting and level up
-  - `/level` - Check your level and XP
+  - `/level`, `/profile` - Check your level and XP
   - `/leaderboard` - View server leaderboard
+  - `/achievements` - View earned achievements
+  - `/daily` - Claim daily XP rewards
+- ✅ **GitHub Integration** - Track repository updates
+  - `/github` - Manage subscriptions to repositories
+  - Background polling for commits and issues
+- ✅ **Server Logging** - Comprehensive event logging
+  - `/logging` - Configure logging channels
+  - Tracks messages, member changes, voice state, and more
+- ✅ **AI Assistant** - Intelligent responses via OpenRouter
+  - Responds to mentions with context-aware answers
+  - Configurable persona and reasoning capabilities
+- ✅ **Server Stats** - Track server growth
+  - `/serverstats` - View server statistics
+  - Automatic channel counters for member count
+- ✅ **Timezones** - User timezone management
+  - `/timezones` - Set and view user timezones
 
 ### Coming Soon
 
 - 🎵 Music Playing (Spotify, YouTube)
 - 💻 Interactive Code Execution & Challenges
-- 📊 GitHub Organization Tracking
-- 📝 Server Logger
-- 🤖 AI Integration (OpenRouter)
 
 ## 🚀 Getting Started
 
@@ -69,9 +82,11 @@ See [AGENTS.md](AGENTS.md) for detailed architecture documentation.
    cp .env.example .env
    ```
    
-   Then edit `.env` and add your Discord bot token:
-   ```
-   DISCORD_TOKEN=your_actual_token_here
+   Then edit `.env` and add your tokens:
+   ```env
+   DISCORD_TOKEN=your_discord_token
+   GITHUB_TOKEN=your_github_token
+   OPENROUTER_API_KEY=your_openrouter_key
    ```
 
 3. **Build and run**
@@ -128,9 +143,14 @@ src/
 ├── main.rs                 # Entry point & dependency injection
 ├── core/                   # Business logic (platform-agnostic)
 │   ├── leveling/          # Leveling system domain
+│   ├── ai/                # AI service domain
+│   ├── github/            # GitHub tracking domain
+│   ├── logging/           # Logging domain
 │   └── mod.rs
 ├── infra/                  # External implementations
 │   ├── leveling/          # XP storage implementations
+│   ├── ai/                # OpenRouter client
+│   ├── github/            # GitHub API client
 │   └── mod.rs
 └── discord/                # Discord adapters
     ├── commands/          # Slash commands
@@ -139,7 +159,7 @@ src/
 
 ### Adding a New Feature
 
-Follow the architecture guide in [AGENTS.md](AGENTS.md):
+Follow the architecture guide:
 
 1. **Core** - Define domain models, business rules, and trait interfaces
 2. **Infra** - Implement the traits for external systems
@@ -147,7 +167,6 @@ Follow the architecture guide in [AGENTS.md](AGENTS.md):
 
 ## 📖 Documentation
 
-- [AGENTS.md](AGENTS.md) - Comprehensive architecture guide
 - Inline code comments explain every design decision
 - Run `cargo doc --open` for API documentation
 
