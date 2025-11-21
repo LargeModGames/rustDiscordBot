@@ -488,6 +488,7 @@ async fn main() {
                 crate::discord::logging::commands::logging(),
                 discord::commands::github::github(),
                 discord::commands::info::info(),
+                discord::commands::help::help(),
             ],
             // Event handler for messages and other events
             event_handler: |ctx, event, framework, data| {
