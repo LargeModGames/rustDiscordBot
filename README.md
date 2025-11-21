@@ -31,7 +31,6 @@ This bot follows **Clean Architecture** (Hexagonal Architecture) with three dist
 - **`infra/`** - Implementations of core traits (databases, APIs)
 - **`discord/`** - Discord-specific adapters (commands, events)
 
-See [AGENTS.md](AGENTS.md) for detailed architecture documentation.
 
 ## ✨ Features
 
