@@ -530,12 +530,12 @@ async fn main() {
                 // and comment out register_globally.
 
                 // Explicitly clear guild commands to remove duplicates from previous runs
-                poise::builtins::register_in_guild(
-                    ctx,
-                    &[] as &[poise::Command<Data, Error>], // Empty list clears guild commands
-                    serenity::GuildId::new(1432001978447167611),
-                )
-                .await?;
+                // poise::builtins::register_in_guild(
+                //    ctx,
+                //    &[] as &[poise::Command<Data, Error>], // Empty list clears guild commands
+                //    serenity::GuildId::new(1432001978447167611),
+                // )
+                // .await?;
 
                 println!("✅ Commands registered!");
                 println!("🚀 Bot is ready!");

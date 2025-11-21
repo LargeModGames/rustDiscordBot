@@ -69,6 +69,15 @@ See [AGENTS.md](AGENTS.md) for detailed architecture documentation.
 - Rust (latest stable) - [Install Rust](https://rustup.rs/)
 - A Discord Bot Token - [Create a bot](https://discord.com/developers/applications)
 
+#### System Dependencies (Linux)
+
+If you are building on Linux (Ubuntu, Debian, Raspberry Pi OS), you need to install OpenSSL development packages:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y libssl-dev pkg-config
+```
+
 ### Setup
 
 1. **Clone the repository**
