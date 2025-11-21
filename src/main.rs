@@ -20,22 +20,22 @@ mod discord;
 #[path = "infra/infra_layer.rs"]
 mod infra;
 
-use crate::core::leveling::{LevelingService, MessageContentStats};
 use crate::core::github::GithubService;
+use crate::core::leveling::{LevelingService, MessageContentStats};
 use crate::core::logging::{LoggingService, TrackedMessage};
 use crate::core::server_stats::ServerStatsService;
 use crate::core::timezones::TimezoneService;
 use crate::discord::commands::presence;
 use crate::discord::commands::server_stats::update_guild_stats;
+use crate::discord::github::dispatcher as github_dispatcher;
 use crate::discord::leveling_announcements::send_level_up_embed;
 use crate::discord::logging::events as logging_events;
 use crate::discord::{Data, Error};
-use crate::discord::github::dispatcher as github_dispatcher;
+use crate::infra::github::file_store::GithubFileStore;
+use crate::infra::github::github_client::GithubApiClient;
 use crate::infra::leveling::SqliteXpStore;
 use crate::infra::logging::sqlite_store::SqliteLogStore;
 use crate::infra::server_stats::JsonServerStatsStore;
-use crate::infra::github::file_store::GithubFileStore;
-use crate::infra::github::github_client::GithubApiClient;
 use poise::serenity_prelude as serenity;
 
 /// Event handler for non-command Discord events.
@@ -241,8 +241,7 @@ async fn main() {
 
     // Keep runtime databases in a dedicated folder so the repo root stays tidy.
     let data_dir = "data";
-    std::fs::create_dir_all(data_dir)
-        .expect("Failed to create data directory for SQLite files");
+    std::fs::create_dir_all(data_dir).expect("Failed to create data directory for SQLite files");
     let leveling_db_path = format!("{}/leveling.db", data_dir);
     let logging_db_path = format!("{}/logging.db", data_dir);
 
@@ -377,7 +376,7 @@ async fn main() {
                 println!("🚀 Bot is ready!");
                 presence::on_ready(ctx, &data).await;
 
-                // Background GitHub poller (commits, issues). Runs every ~2 minutes.
+                // Background GitHub poller (commits, issues). Runs every 60 seconds.
                 let github_service = Arc::clone(&data.github);
                 let github_http = ctx.http.clone();
                 tokio::spawn(async move {
@@ -385,16 +384,20 @@ async fn main() {
                     use tokio::time::sleep;
 
                     loop {
+                        tracing::debug!("Starting background GitHub poll...");
                         match github_service.poll_updates().await {
                             Ok(updates) => {
                                 if !updates.is_empty() {
+                                    tracing::info!("Found {} GitHub updates", updates.len());
                                     github_dispatcher::send_updates(&github_http, updates).await;
+                                } else {
+                                    tracing::debug!("No GitHub updates found");
                                 }
                             }
                             Err(err) => tracing::warn!("GitHub poll failed: {}", err),
                         }
 
-                        sleep(StdDuration::from_secs(120)).await;
+                        sleep(StdDuration::from_secs(60)).await;
                     }
                 });
 

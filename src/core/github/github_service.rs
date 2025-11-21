@@ -286,7 +286,10 @@ where
         if let Some(entries) = config.guilds.get_mut(&guild_id) {
             let before = entries.len();
             entries.retain(|entry| {
-                !(entry.repo.as_deref().is_some_and(|r| r.eq_ignore_ascii_case(repo))
+                !(entry
+                    .repo
+                    .as_deref()
+                    .is_some_and(|r| r.eq_ignore_ascii_case(repo))
                     && entry.owner.eq_ignore_ascii_case(owner)
                     && !entry.is_org)
             });
@@ -299,11 +302,7 @@ where
     }
 
     /// Remove an organization entry.
-    pub async fn remove_organization(
-        &self,
-        guild_id: u64,
-        org: &str,
-    ) -> Result<bool, GithubError> {
+    pub async fn remove_organization(&self, guild_id: u64, org: &str) -> Result<bool, GithubError> {
         let mut config = self.config.write().await;
         if let Some(entries) = config.guilds.get_mut(&guild_id) {
             let before = entries.len();
@@ -320,22 +319,43 @@ where
     pub async fn poll_updates(&self) -> Result<Vec<GithubUpdate>, GithubError> {
         // Clone the config so we can perform HTTP calls without holding locks.
         let snapshot = { self.config.read().await.clone() };
-        let mut updated_config = snapshot.clone();
         let mut updates = Vec::new();
-        let mut dirty = false;
 
-        for (guild_id, entries) in updated_config.guilds.iter_mut() {
-            for entry in entries.iter_mut() {
+        // We collect changes to apply them safely after the poll.
+        struct RepoStateUpdate {
+            guild_id: u64,
+            owner: String,
+            repo: Option<String>, // None if org
+            is_org: bool,
+            // For single repo:
+            new_state: Option<RepoTrackingData>,
+            // For org:
+            org_repos: Option<Vec<String>>,
+            repo_states: Option<HashMap<String, RepoTrackingData>>,
+        }
+
+        let mut pending_changes = Vec::new();
+
+        for (guild_id, entries) in snapshot.guilds.iter() {
+            for entry in entries {
                 let owner = entry.owner.clone();
                 if entry.is_org {
-                    if entry.org_repos.is_empty() {
-                        entry.org_repos = self.client.list_org_repos(&owner).await?;
-                        dirty = true;
+                    let mut org_repos_update = None;
+                    let mut current_repos = entry.org_repos.clone();
+
+                    if current_repos.is_empty() {
+                        let fetched = self.client.list_org_repos(&owner).await?;
+                        current_repos = fetched.clone();
+                        org_repos_update = Some(fetched);
                     }
 
-                    for repo in entry.org_repos.clone() {
+                    let mut repo_states_update = HashMap::new();
+                    let mut org_dirty = false;
+
+                    for repo in current_repos {
                         let repo_key = format!("{}/{}", owner, repo);
-                        let repo_state = entry.repo_data.entry(repo_key.clone()).or_default();
+                        let mut repo_state =
+                            entry.repo_data.get(&repo_key).cloned().unwrap_or_default();
 
                         let (repo_updates, repo_dirty) = self
                             .poll_repository(
@@ -343,11 +363,27 @@ where
                                 entry.channel_id,
                                 &owner,
                                 &repo,
-                                repo_state,
+                                &mut repo_state,
                             )
                             .await?;
                         updates.extend(repo_updates);
-                        dirty |= repo_dirty;
+
+                        if repo_dirty {
+                            repo_states_update.insert(repo_key, repo_state);
+                            org_dirty = true;
+                        }
+                    }
+
+                    if org_repos_update.is_some() || org_dirty {
+                        pending_changes.push(RepoStateUpdate {
+                            guild_id: *guild_id,
+                            owner: owner.clone(),
+                            repo: None,
+                            is_org: true,
+                            new_state: None,
+                            org_repos: org_repos_update,
+                            repo_states: Some(repo_states_update),
+                        });
                     }
                 } else if let Some(repo) = entry.repo.clone() {
                     let mut state = RepoTrackingData {
@@ -357,31 +393,53 @@ where
                     };
 
                     let (repo_updates, repo_dirty) = self
-                        .poll_repository(
-                            *guild_id,
-                            entry.channel_id,
-                            &owner,
-                            &repo,
-                            &mut state,
-                        )
+                        .poll_repository(*guild_id, entry.channel_id, &owner, &repo, &mut state)
                         .await?;
 
                     updates.extend(repo_updates);
-                    dirty |= repo_dirty;
 
                     if repo_dirty {
-                        entry.last_commit_shas = state.last_commit_shas;
-                        entry.last_bug_closed_at = state.last_bug_closed_at;
-                        entry.last_issue_updated_at = state.last_issue_updated_at;
+                        pending_changes.push(RepoStateUpdate {
+                            guild_id: *guild_id,
+                            owner: owner.clone(),
+                            repo: Some(repo),
+                            is_org: false,
+                            new_state: Some(state),
+                            org_repos: None,
+                            repo_states: None,
+                        });
                     }
                 }
             }
         }
 
-        if dirty {
-            let mut guard = self.config.write().await;
-            *guard = updated_config.clone();
-            self.store.save(&updated_config).await?;
+        if !pending_changes.is_empty() {
+            let mut config = self.config.write().await;
+            for change in pending_changes {
+                if let Some(guild_entries) = config.guilds.get_mut(&change.guild_id) {
+                    if let Some(entry) = guild_entries.iter_mut().find(|e| {
+                        e.owner.eq_ignore_ascii_case(&change.owner)
+                            && e.repo == change.repo
+                            && e.is_org == change.is_org
+                    }) {
+                        if change.is_org {
+                            if let Some(repos) = change.org_repos {
+                                entry.org_repos = repos;
+                            }
+                            if let Some(states) = change.repo_states {
+                                for (k, v) in states {
+                                    entry.repo_data.insert(k, v);
+                                }
+                            }
+                        } else if let Some(state) = change.new_state {
+                            entry.last_commit_shas = state.last_commit_shas;
+                            entry.last_bug_closed_at = state.last_bug_closed_at;
+                            entry.last_issue_updated_at = state.last_issue_updated_at;
+                        }
+                    }
+                }
+            }
+            self.store.save(&config).await?;
         }
 
         Ok(updates)
@@ -401,10 +459,7 @@ where
         // Commits per branch
         let branches = self.client.list_branches(owner, repo).await?;
         for branch in branches {
-            let commits = self
-                .client
-                .list_commits(owner, repo, &branch, 10)
-                .await?;
+            let commits = self.client.list_commits(owner, repo, &branch, 10).await?;
             let last_seen = state.last_commit_shas.get(&branch).cloned();
             if last_seen.is_none() {
                 // First run: store a baseline so we don't flood the channel with history.
@@ -519,10 +574,7 @@ fn collect_new_commits(commits: &[Commit], last_seen: Option<&str>) -> Vec<Commi
 
 /// Pick the most recent closed bug time so we can update the watermark.
 fn latest_closed_timestamp(issues: &[Issue]) -> Option<DateTime<Utc>> {
-    issues
-        .iter()
-        .filter_map(|i| i.closed_at)
-        .max()
+    issues.iter().filter_map(|i| i.closed_at).max()
 }
 
 /// Identify newly closed bug issues compared to the stored baseline.
@@ -587,14 +639,12 @@ fn collect_issue_events(
 
                     let activity = match issue.state {
                         IssueState::Closed => IssueActivity::Closed,
-                        IssueState::Open => {
-                            match created_at {
-                                Some(c) if (updated_at - c).num_seconds().abs() < 60 => {
-                                    IssueActivity::Opened
-                                }
-                                _ => IssueActivity::Updated,
+                        IssueState::Open => match created_at {
+                            Some(c) if (updated_at - c).num_seconds().abs() < 60 => {
+                                IssueActivity::Opened
                             }
-                        }
+                            _ => IssueActivity::Updated,
+                        },
                     };
 
                     events.push((issue.clone(), activity));
