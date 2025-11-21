@@ -119,6 +119,11 @@ pub async fn xpstats(
     #[description = "User to check"] user: Option<serenity::User>,
 ) -> Result<(), Error> {
     let target_user = user.as_ref().unwrap_or_else(|| ctx.author());
+    if target_user.bot {
+        ctx.say("Bots don't have XP stats! 🤖").await?;
+        return Ok(());
+    }
+
     let user_id = target_user.id.get();
     let guild_id = ctx
         .guild_id()
@@ -240,16 +245,24 @@ pub async fn leaderboard(
         .guild_id()
         .ok_or("This command only works in servers")?
         .get();
-    let page = page.unwrap_or(1);
-    let per_page = 10;
-    let offset = (page - 1) * per_page;
+
+    // Defer response since recalculating ranks might take a moment
+    ctx.defer().await?;
 
     // 2. Recalculate ranks and fetch current profiles
-    let profiles = ctx
+    let all_profiles = ctx
         .data()
         .leveling
         .recalculate_and_update_ranks(guild_id)
         .await?;
+
+    // Filter out bots
+    let mut profiles = Vec::new();
+    for profile in all_profiles {
+        if !is_bot(&ctx, guild_id, profile.user_id).await {
+            profiles.push(profile);
+        }
+    }
 
     // Check if we have any data
     if profiles.is_empty() {
@@ -258,53 +271,263 @@ pub async fn leaderboard(
         return Ok(());
     }
 
-    // 3. Format response
-    let guild_name = ctx
-        .guild()
-        .map(|g| g.name.clone())
-        .unwrap_or_else(|| "Unknown Server".to_string());
+    let per_page = 10;
+    let total_pages = (profiles.len() + per_page - 1) / per_page;
+    let mut current_page = page.unwrap_or(1).clamp(1, total_pages);
 
-    // Build the leaderboard text
-    let mut description = String::new();
-    for (index, stats) in profiles.iter().skip(offset).take(per_page).enumerate() {
-        let rank = offset + index + 1;
-        debug_assert_eq!(
-            stats.guild_id, guild_id,
-            "Leaderboard returned stats for the wrong guild"
-        );
+    // Function to build the page content
+    // We can't easily use a closure because of the async resolve_display_name call
+    // so we'll just do it in the loop or use a macro/helper function if it gets too complex.
 
-        // Resolve a display name: prefer nickname in the guild, then username, then a fetch,
-        // and finally fall back to a mention so the entry is readable.
-        let user_name = resolve_display_name(&ctx, guild_id, stats.user_id).await;
+    let msg = {
+        let offset = (current_page - 1) * per_page;
+        let mut description = String::new();
 
-        // Add medal emojis for top 3
-        let medal = match rank {
-            1 => "🥇",
-            2 => "🥈",
-            3 => "🥉",
-            _ => "  ",
-        };
+        // Add user's rank at the top
+        let user_id = ctx.author().id.get();
+        if let Some(rank) = profiles
+            .iter()
+            .position(|p| p.user_id == user_id)
+            .map(|i| i + 1)
+        {
+            description.push_str(&format!("Your rank: **#{}**\n\n", rank));
+        } else {
+            description.push_str("You are not ranked yet.\n\n");
+        }
 
-        description.push_str(&format!(
-            "{} **#{}** {} - Level {} ({} XP)\n",
-            medal, rank, user_name, stats.level, stats.total_xp
-        ));
+        for (index, stats) in profiles.iter().skip(offset).take(per_page).enumerate() {
+            let rank = offset + index + 1;
+
+            let user_name = resolve_display_name(&ctx, guild_id, stats.user_id).await;
+
+            // Add medal emojis for top 3
+            let medal = match rank {
+                1 => "🥇",
+                2 => "🥈",
+                3 => "🥉",
+                _ => "  ",
+            };
+
+            // Highlight the user if it's them
+            let is_me = stats.user_id == ctx.author().id.get();
+            let name_display = if is_me {
+                format!("**{}** (You)", user_name)
+            } else {
+                user_name
+            };
+
+            // Progress bar for the level
+            let leveling = &ctx.data().leveling;
+            let previous_threshold = leveling.xp_for_level(stats.level);
+            let next_threshold = leveling.xp_for_next_level(stats.level);
+            let xp_progress = stats.total_xp.saturating_sub(previous_threshold);
+            let level_span = next_threshold.saturating_sub(previous_threshold);
+
+            let progress_pct = if level_span > 0 {
+                xp_progress as f64 / level_span as f64
+            } else {
+                0.0
+            };
+
+            let bar = build_progress_bar(progress_pct, 10);
+
+            description.push_str(&format!(
+                "{} **#{}** {}\nLevel {} | {} XP\n{} ({:.0}%)\n\n",
+                medal,
+                rank,
+                name_display,
+                stats.level,
+                stats.total_xp,
+                bar,
+                progress_pct * 100.0
+            ));
+        }
+
+        let embed = serenity::CreateEmbed::new()
+            .title(format!("📊 Leaderboard"))
+            .description(description)
+            .color(0xffd700) // Gold color
+            .footer(serenity::CreateEmbedFooter::new(format!(
+                "Page {}/{}",
+                current_page, total_pages
+            )));
+
+        let components = vec![serenity::CreateActionRow::Buttons(vec![
+            serenity::CreateButton::new("prev")
+                .label("◀ Previous")
+                .style(serenity::ButtonStyle::Primary)
+                .disabled(current_page == 1),
+            serenity::CreateButton::new("next")
+                .label("Next ▶")
+                .style(serenity::ButtonStyle::Primary)
+                .disabled(current_page == total_pages),
+            serenity::CreateButton::new("find_me")
+                .label("🔍 Find Me")
+                .style(serenity::ButtonStyle::Secondary),
+        ])];
+
+        ctx.send(
+            poise::CreateReply::default()
+                .embed(embed)
+                .components(components),
+        )
+        .await?
+    };
+
+    let msg_id = msg.message().await?.id;
+
+    // Interaction loop
+    while let Some(mci) = serenity::ComponentInteractionCollector::new(ctx)
+        .author_id(ctx.author().id)
+        .channel_id(ctx.channel_id())
+        .timeout(std::time::Duration::from_secs(60 * 2)) // 2 minutes
+        .filter(move |mci| mci.message.id == msg_id)
+        .await
+    {
+        // Update page based on interaction
+        match mci.data.custom_id.as_str() {
+            "prev" => {
+                if current_page > 1 {
+                    current_page -= 1;
+                }
+            }
+            "next" => {
+                if current_page < total_pages {
+                    current_page += 1;
+                }
+            }
+            "find_me" => {
+                let user_id = ctx.author().id.get();
+                if let Some(idx) = profiles.iter().position(|p| p.user_id == user_id) {
+                    current_page = (idx / per_page) + 1;
+                } else {
+                    // User not on leaderboard (shouldn't happen if they have XP, but maybe they don't)
+                    if let Err(e) = mci
+                        .create_response(
+                            &ctx,
+                            serenity::CreateInteractionResponse::Message(
+                                serenity::CreateInteractionResponseMessage::new()
+                                    .content("You are not on the leaderboard yet!")
+                                    .ephemeral(true),
+                            ),
+                        )
+                        .await
+                    {
+                        println!("Error sending ephemeral response: {:?}", e);
+                    }
+                    continue;
+                }
+            }
+            _ => {}
+        }
+
+        // Rebuild the message content
+        let offset = (current_page - 1) * per_page;
+        let mut description = String::new();
+
+        // Add user's rank at the top
+        let user_id = ctx.author().id.get();
+        if let Some(rank) = profiles
+            .iter()
+            .position(|p| p.user_id == user_id)
+            .map(|i| i + 1)
+        {
+            description.push_str(&format!("Your rank: **#{}**\n\n", rank));
+        } else {
+            description.push_str("You are not ranked yet.\n\n");
+        }
+
+        for (index, stats) in profiles.iter().skip(offset).take(per_page).enumerate() {
+            let rank = offset + index + 1;
+
+            let user_name = resolve_display_name(&ctx, guild_id, stats.user_id).await;
+
+            let medal = match rank {
+                1 => "🥇",
+                2 => "🥈",
+                3 => "🥉",
+                _ => "  ",
+            };
+
+            let is_me = stats.user_id == ctx.author().id.get();
+            let name_display = if is_me {
+                format!("**{}** (You)", user_name)
+            } else {
+                user_name
+            };
+
+            let leveling = &ctx.data().leveling;
+            let previous_threshold = leveling.xp_for_level(stats.level);
+            let next_threshold = leveling.xp_for_next_level(stats.level);
+            let xp_progress = stats.total_xp.saturating_sub(previous_threshold);
+            let level_span = next_threshold.saturating_sub(previous_threshold);
+
+            let progress_pct = if level_span > 0 {
+                xp_progress as f64 / level_span as f64
+            } else {
+                0.0
+            };
+
+            let bar = build_progress_bar(progress_pct, 10);
+
+            description.push_str(&format!(
+                "{} **#{}** {}\nLevel {} | {} XP\n{} ({:.0}%)\n\n",
+                medal,
+                rank,
+                name_display,
+                stats.level,
+                stats.total_xp,
+                bar,
+                progress_pct * 100.0
+            ));
+        }
+
+        let embed = serenity::CreateEmbed::new()
+            .title(format!("📊 Leaderboard"))
+            .description(description)
+            .color(0xffd700)
+            .footer(serenity::CreateEmbedFooter::new(format!(
+                "Page {}/{}",
+                current_page, total_pages
+            )));
+
+        let components = vec![serenity::CreateActionRow::Buttons(vec![
+            serenity::CreateButton::new("prev")
+                .label("◀ Previous")
+                .style(serenity::ButtonStyle::Primary)
+                .disabled(current_page == 1),
+            serenity::CreateButton::new("next")
+                .label("Next ▶")
+                .style(serenity::ButtonStyle::Primary)
+                .disabled(current_page == total_pages),
+            serenity::CreateButton::new("find_me")
+                .label("🔍 Find Me")
+                .style(serenity::ButtonStyle::Secondary),
+        ])];
+
+        // Acknowledge and update the message
+        if let Err(e) = mci
+            .create_response(
+                &ctx,
+                serenity::CreateInteractionResponse::UpdateMessage(
+                    serenity::CreateInteractionResponseMessage::new()
+                        .embed(embed)
+                        .components(components),
+                ),
+            )
+            .await
+        {
+            println!("Error updating leaderboard: {:?}", e);
+        }
     }
 
-    ctx.send(
-        poise::CreateReply::default().embed(
-            serenity::CreateEmbed::new()
-                .title(format!("🏆 {} Leaderboard - Page {}", guild_name, page))
-                .description(description)
-                .color(0xffd700) // Gold color
-                .footer(serenity::CreateEmbedFooter::new(format!(
-                    "Showing ranks {}-{}",
-                    offset + 1,
-                    offset + profiles.iter().skip(offset).take(per_page).count()
-                ))),
-        ),
-    )
-    .await?;
+    // Remove components after timeout
+    let _ = msg
+        .edit(
+            ctx,
+            poise::CreateReply::default().components(vec![]), // Empty components to remove them
+        )
+        .await;
 
     Ok(())
 }
@@ -354,6 +577,39 @@ async fn resolve_display_name(ctx: &Context<'_>, guild_id: u64, user_id: u64) ->
 
     // Final fallback: return a mention so it's still obvious who the entry is
     format!("<@{}>", user_id)
+}
+
+/// Check if a user is a bot
+async fn is_bot(ctx: &Context<'_>, guild_id: u64, user_id: u64) -> bool {
+    let user_id_s = serenity::UserId::from(user_id);
+    let guild_id_s = serenity::GuildId::from(guild_id);
+
+    // Try cache first
+    if let Some(user) = ctx.serenity_context().cache.user(user_id_s) {
+        return user.bot;
+    }
+
+    if let Some(guild) = ctx.serenity_context().cache.guild(guild_id_s) {
+        if let Some(member) = guild.members.get(&user_id_s) {
+            return member.user.bot;
+        }
+    }
+
+    // Fetch from API
+    if let Ok(member) = ctx
+        .serenity_context()
+        .http
+        .get_member(guild_id_s, user_id_s)
+        .await
+    {
+        return member.user.bot;
+    }
+
+    if let Ok(user) = ctx.serenity_context().http.get_user(user_id_s).await {
+        return user.bot;
+    }
+
+    false
 }
 
 /// Type alias for our bot's context.
