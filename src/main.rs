@@ -20,79 +20,27 @@ mod discord;
 #[path = "infra/infra_layer.rs"]
 mod infra;
 
+use crate::core::ai::{AiConfig, AiService};
 use crate::core::github::GithubService;
 use crate::core::leveling::{LevelingService, MessageContentStats};
 use crate::core::logging::{LoggingService, TrackedMessage};
 use crate::core::server_stats::ServerStatsService;
 use crate::core::timezones::TimezoneService;
-use crate::core::ai::{AiService, AiConfig};
 use crate::discord::commands::presence;
 use crate::discord::commands::server_stats::update_guild_stats;
 use crate::discord::github::dispatcher as github_dispatcher;
 use crate::discord::leveling_announcements::send_level_up_embed;
 use crate::discord::logging::events as logging_events;
 use crate::discord::{Data, Error};
+use crate::infra::ai::OpenRouterClient;
 use crate::infra::github::file_store::GithubFileStore;
 use crate::infra::github::github_client::GithubApiClient;
 use crate::infra::leveling::SqliteXpStore;
 use crate::infra::logging::sqlite_store::SqliteLogStore;
 use crate::infra::server_stats::JsonServerStatsStore;
-use crate::infra::ai::OpenRouterClient;
 use poise::serenity_prelude as serenity;
 
-const DEFAULT_SYSTEM_PROMPT: &str = r#"Role:
-- You are Greybeard Halt, the official AI assistant for Greybeard Game Studios.
-- Support community members with questions about game development, studio updates, and our narrative-driven single-player RPG currently codenamed Project Fiefdom.
-- Acknowledge that the bot was created by LargeModGames when relevant.
-
-Project context:
-- The story follows a hero fighting to restore their father's honor in a fractured kingdom filled with political intrigue, shifting alliances, and survival against overwhelming odds.
-- Explore themes of loyalty, betrayal, and the harsh realities of a living feudal system.
-- When helpful, reference publicly available details from https://greybeardgamestudios.com/ to provide accurate context about the studio and Project Fiefdom.
-- If a user asks how to join the team you are setup to automaically send them the info on how to join. You dont have to give more context on how to join, just that you will send the details.
-- Information on how to join the team can be seen in the #apply-here channel on discord.
-
-Guidelines:
-- Provide a direct, concise, and correct answer.
-- Keep a warm, witty tone; sprinkle light humour when it helps, without undercutting clarity or respect.
-- If someone drops a wildly out-of-context or meme message (like just "69"), fire back with a playful acknowledgement.
-- Do not reveal internal chain-of-thought or lengthy reasoning steps.
-- Offer a brief, high-level explanation before the final answer.
-- Answer in the same language as the question.
-- Share only details explicitly contained in this prompt; do not speculate or reference external information about the studio or Project Fiefdom.
-
-Team:
-- Leadership
-	- Founder - Ranger-Z
-	- Project Leader - Att
-	- Community Manager / Admin - LargeModGames
-	- Community Manager / Lead Quality Assurance - Att
-	- Lead Programmer - E.Mark
-	- Lead Artist - Andrew
-	- Lead of Sound - K
-	- Lead Writer - Kacwery
-- Community
-	- Community Manager / Admin - LargeModGames
-	- Community Manager / Lead Quality Assurance - Att
-	- Editor - juliet
-- Programming
-	- Lead Programmer - E.Mark
-- Artists
-	- Lead Artist - Andrew
-	- Environment Artist - <name>
-	- UI/UX Artist - <name>
-	- 2D Artist - <name>
-	- 3D Artist - <name>
-- Sound
-	- Lead of Sound - K
-	- Sound Design - <name>
-	- Voice Actor - <name>
-- Writers
-	- Lead Writer - Kacwery
-
-Response format:
-<rationale>(maximum 3 short sentences or bullets, high-level explanation; no internal chain-of-thought)</rationale>
-<answer>(the final answer)</answer>"#;
+const DEFAULT_SYSTEM_PROMPT: &str = "You are a helpful AI assistant.";
 
 /// Event handler for non-command Discord events.
 /// This is where we'll handle messages for XP gain.
@@ -113,52 +61,94 @@ async fn event_handler(
             let bot_id = ctx.cache.current_user().id;
             if new_message.mentions.iter().any(|u| u.id == bot_id) {
                 // It's a mention!
-                // Remove mention from content
-                let content = new_message.content
-                    .replace(&format!("<@{}>", bot_id), "")
-                    .replace(&format!("<@!{}>", bot_id), "")
-                    .trim()
-                    .to_string();
-                
-                if !content.is_empty() {
-                    // Trigger typing
-                    let _ = new_message.channel_id.broadcast_typing(&ctx.http).await;
-                    
-                    // Call AI
-                    match data.ai.chat(new_message.channel_id.get(), content).await {
-                        Ok(response) => {
-                            // Send reasoning if present
-                            if let Some(reasoning) = response.reasoning {
-                                // Truncate reasoning if too long for embed description (4096 chars)
-                                let mut reasoning_text = reasoning;
-                                if reasoning_text.len() > 4000 {
-                                    reasoning_text.truncate(4000);
-                                    reasoning_text.push_str("...");
-                                }
+                // Trigger typing
+                let _ = new_message.channel_id.broadcast_typing(&ctx.http).await;
 
-                                let embed = serenity::CreateEmbed::new()
-                                    .title("🧠 Reasoning")
-                                    .description(reasoning_text)
-                                    .color(0xDAA520) // Dark Gold
-                                    .footer(serenity::CreateEmbedFooter::new("Generated by Greybeard Halt"));
-                                
-                                if let Err(e) = new_message.channel_id.send_message(&ctx.http, serenity::CreateMessage::new().embed(embed)).await {
-                                    tracing::error!("Failed to send reasoning embed: {}", e);
-                                }
+                // Fetch recent messages for context
+                // We want the last N messages, excluding the current one if possible, but Serenity's `messages`
+                // usually returns the latest ones.
+                // We'll fetch slightly more to be safe and filter.
+                let max_history = std::env::var("OPENROUTER_MAX_HISTORY")
+                    .ok()
+                    .and_then(|v| v.parse::<u8>().ok())
+                    .unwrap_or(50);
+
+                let messages = new_message
+                    .channel_id
+                    .messages(&ctx.http, serenity::GetMessages::new().limit(max_history))
+                    .await
+                    .unwrap_or_default();
+
+                // Convert to AiMessage, reversing order so it's oldest -> newest
+                let mut context_messages = Vec::new();
+                for msg in messages.iter().rev() {
+                    // Skip the current message (the mention itself) if we want to handle it separately,
+                    // or include it. Usually we include it as the last user message.
+                    // But wait, `messages` includes the current message if we just fetch latest.
+
+                    let role = if msg.author.id == bot_id {
+                        "assistant".to_string()
+                    } else {
+                        "user".to_string()
+                    };
+
+                    let content = if role == "user" {
+                        format!("{}: {}", msg.author.name, msg.content)
+                    } else {
+                        msg.content.clone()
+                    };
+
+                    context_messages.push(crate::core::ai::AiMessage { role, content });
+                }
+
+                // Call AI
+                match data.ai.chat(&context_messages).await {
+                    Ok(response) => {
+                        // Send reasoning if present
+                        if let Some(reasoning) = response.reasoning {
+                            // Truncate reasoning if too long for embed description (4096 chars)
+                            let mut reasoning_text = reasoning;
+                            if reasoning_text.len() > 4000 {
+                                reasoning_text.truncate(4000);
+                                reasoning_text.push_str("...");
                             }
 
-                            // Split answer if too long (Discord limit 2000)
-                            for chunk in response.answer.chars().collect::<Vec<char>>().chunks(2000) {
-                                let chunk_str: String = chunk.iter().collect();
-                                if let Err(e) = new_message.channel_id.say(&ctx.http, chunk_str).await {
-                                    tracing::error!("Failed to send AI response: {}", e);
-                                }
+                            let embed = serenity::CreateEmbed::new()
+                                .title("🧠 Reasoning")
+                                .description(reasoning_text)
+                                .color(0xDAA520) // Dark Gold
+                                .footer(serenity::CreateEmbedFooter::new(
+                                    "Generated by Greybeard Halt",
+                                ));
+
+                            if let Err(e) = new_message
+                                .channel_id
+                                .send_message(
+                                    &ctx.http,
+                                    serenity::CreateMessage::new().embed(embed),
+                                )
+                                .await
+                            {
+                                tracing::error!("Failed to send reasoning embed: {}", e);
                             }
                         }
-                        Err(e) => {
-                            tracing::error!("AI error: {}", e);
-                            let _ = new_message.reply(&ctx.http, "Sorry, I encountered an error processing your request.").await;
+
+                        // Split answer if too long (Discord limit 2000)
+                        for chunk in response.answer.chars().collect::<Vec<char>>().chunks(2000) {
+                            let chunk_str: String = chunk.iter().collect();
+                            if let Err(e) = new_message.channel_id.say(&ctx.http, chunk_str).await {
+                                tracing::error!("Failed to send AI response: {}", e);
+                            }
                         }
+                    }
+                    Err(e) => {
+                        tracing::error!("AI error: {}", e);
+                        let _ = new_message
+                            .reply(
+                                &ctx.http,
+                                "Sorry, I encountered an error processing your request.",
+                            )
+                            .await;
                     }
                 }
             }
@@ -400,15 +390,37 @@ async fn main() {
     );
 
     // AI Service
-    let openrouter_api_key = std::env::var("OPENROUTER_API_KEY").expect("Missing OPENROUTER_API_KEY environment variable!");
-    let openrouter_model = std::env::var("OPENROUTER_MODEL").unwrap_or_else(|_| "deepseek/deepseek-chat-v3.1:free".to_string());
-    let system_prompt = std::env::var("OPENROUTER_SYSTEM_PROMPT").unwrap_or_else(|_| DEFAULT_SYSTEM_PROMPT.to_string());
-    
+    let openrouter_api_key = std::env::var("OPENROUTER_API_KEY")
+        .expect("Missing OPENROUTER_API_KEY environment variable!");
+    let openrouter_model = std::env::var("OPENROUTER_MODEL")
+        .unwrap_or_else(|_| "deepseek/deepseek-chat-v3.1:free".to_string());
+    let system_prompt = if let Ok(path) = std::env::var("OPENROUTER_SYSTEM_PROMPT_FILE") {
+        std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            tracing::warn!("Failed to read system prompt file at {}: {}", path, e);
+            DEFAULT_SYSTEM_PROMPT.to_string()
+        })
+    } else {
+        std::env::var("OPENROUTER_SYSTEM_PROMPT")
+            .unwrap_or_else(|_| DEFAULT_SYSTEM_PROMPT.to_string())
+    };
+    let reasoning_enabled = std::env::var("OPENROUTER_REASONING_ENABLED")
+        .ok()
+        .and_then(|v| v.parse::<bool>().ok());
+    let reasoning_effort = std::env::var("OPENROUTER_REASONING_EFFORT").ok();
+    let _max_history = std::env::var("OPENROUTER_MAX_HISTORY")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(50); // Default to 50 messages if not set
+
     let ai_client = OpenRouterClient::new(openrouter_api_key);
     let ai_config = AiConfig {
         model: openrouter_model,
         temperature: 0.7,
         max_tokens: None,
+        top_p: Some(1.0),
+        repetition_penalty: Some(1.0),
+        reasoning_enabled,
+        reasoning_effort,
     };
     let ai_service = Arc::new(AiService::new(ai_client, system_prompt, ai_config));
 
