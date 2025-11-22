@@ -35,7 +35,12 @@ pub async fn on_ready(ctx: &serenity::Context, data: &crate::discord::Data) {
             for cfg in configs {
                 let guild_id = serenity::GuildId::from(cfg.guild_id);
                 if let Err(e) =
-                    crate::discord::commands::server_stats::update_guild_stats(ctx, data, guild_id)
+                    crate::discord::commands::server_stats::update_guild_stats(
+                        ctx,
+                        data,
+                        guild_id,
+                        crate::discord::commands::server_stats::StatsUpdateEvent::None,
+                    )
                         .await
                 {
                     eprintln!("Failed to update stats for guild {}: {}", cfg.guild_id, e);

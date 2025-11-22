@@ -27,7 +27,7 @@ use crate::core::logging::{LoggingService, TrackedMessage};
 use crate::core::server_stats::ServerStatsService;
 use crate::core::timezones::TimezoneService;
 use crate::discord::commands::presence;
-use crate::discord::commands::server_stats::update_guild_stats;
+use crate::discord::commands::server_stats::{update_guild_stats, StatsUpdateEvent};
 use crate::discord::github::dispatcher as github_dispatcher;
 use crate::discord::leveling_announcements::send_level_up_embed;
 use crate::discord::logging::events as logging_events;
@@ -271,7 +271,14 @@ async fn event_handler(
             }
         }
         serenity::FullEvent::GuildMemberAddition { new_member } => {
-            if let Err(e) = update_guild_stats(ctx, data, new_member.guild_id).await {
+            if let Err(e) = update_guild_stats(
+                ctx,
+                data,
+                new_member.guild_id,
+                StatsUpdateEvent::MemberJoin(new_member),
+            )
+            .await
+            {
                 eprintln!("Error updating stats on join: {}", e);
             }
             if let Err(e) = logging_events::handle_member_join(ctx, data, new_member).await {
@@ -283,7 +290,9 @@ async fn event_handler(
             user,
             member_data_if_available,
         } => {
-            if let Err(e) = update_guild_stats(ctx, data, *guild_id).await {
+            if let Err(e) =
+                update_guild_stats(ctx, data, *guild_id, StatsUpdateEvent::MemberLeave(user)).await
+            {
                 eprintln!("Error updating stats on leave: {}", e);
             }
             if let Err(e) = logging_events::handle_member_remove(
@@ -302,7 +311,14 @@ async fn event_handler(
             old_data_if_available: _,
             new_data,
         } => {
-            if let Err(e) = update_guild_stats(ctx, data, new_data.id).await {
+            if let Err(e) = update_guild_stats(
+                ctx,
+                data,
+                new_data.id,
+                StatsUpdateEvent::GuildUpdate(new_data),
+            )
+            .await
+            {
                 eprintln!("Error updating stats on guild update: {}", e);
             }
         }
@@ -390,7 +406,9 @@ async fn main() {
     let leveling_service = Arc::new(LevelingService::new(xp_store));
 
     // Create server stats store
-    let stats_store = JsonServerStatsStore::new("data/server_stats.json");
+    let config_dir = "config";
+    std::fs::create_dir_all(config_dir).expect("Failed to create config directory");
+    let stats_store = JsonServerStatsStore::new(format!("{}/server_stats.json", config_dir));
     let stats_service = Arc::new(ServerStatsService::new(stats_store));
 
     let timezone_service = Arc::new(TimezoneService::new());

@@ -223,11 +223,20 @@ pub async fn status(ctx: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
 
+/// Event that triggered the stats update
+pub enum StatsUpdateEvent<'a> {
+    GuildUpdate(&'a serenity::PartialGuild),
+    MemberJoin(&'a serenity::Member),
+    MemberLeave(&'a serenity::User),
+    None,
+}
+
 /// Helper function to update stats for a guild
 pub async fn update_guild_stats(
     ctx: &serenity::Context,
     data: &Data,
     guild_id: serenity::GuildId,
+    event: StatsUpdateEvent<'_>,
 ) -> Result<(), Error> {
     let config = match data.server_stats.get_config(guild_id.get()).await? {
         Some(c) => c,
@@ -248,17 +257,45 @@ pub async fn update_guild_stats(
         return Ok(());
     };
 
-    let total_members = guild.member_count;
+    let mut total_members = guild.member_count;
+    let mut bots_count = guild.members.values().filter(|m| m.user.bot).count();
+    let mut boosts = guild.premium_subscription_count.unwrap_or(0);
+
+    // Apply immediate updates based on the event, correcting for potential cache lag
+    match event {
+        StatsUpdateEvent::GuildUpdate(pg) => {
+            boosts = pg.premium_subscription_count.unwrap_or(0);
+        }
+        StatsUpdateEvent::MemberJoin(m) => {
+            // If the member is NOT in the cached guild members yet, we need to account for them
+            if !guild.members.contains_key(&m.user.id) {
+                total_members += 1;
+                if m.user.bot {
+                    bots_count += 1;
+                }
+            }
+        }
+        StatsUpdateEvent::MemberLeave(u) => {
+            // If the member IS still in the cached guild members, we need to remove them
+            if guild.members.contains_key(&u.id) {
+                // Prevent underflow just in case
+                total_members = total_members.saturating_sub(1);
+                if u.bot {
+                    bots_count = bots_count.saturating_sub(1);
+                }
+            }
+        }
+        StatsUpdateEvent::None => {}
+    }
 
     // Note: `guild.members` is a HashMap in serenity 0.12 (FullGuild)
-    let bots_count_cached = guild.members.values().filter(|m| m.user.bot).count();
-    let members_count = if total_members >= bots_count_cached as u64 {
-        (total_members - bots_count_cached as u64) as usize
+    // We calculate human members based on the (potentially adjusted) totals
+    let members_count = if total_members >= bots_count as u64 {
+        (total_members - bots_count as u64) as usize
     } else {
+        // Fallback if numbers don't make sense
         guild.members.values().filter(|m| !m.user.bot).count()
     };
-    let bots_count = bots_count_cached;
-    let boosts = guild.premium_subscription_count.unwrap_or(0);
 
     // Update channels
     let _ = serenity::ChannelId::new(config.total_members_channel_id)
