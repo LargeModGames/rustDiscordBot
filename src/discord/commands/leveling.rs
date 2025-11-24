@@ -254,13 +254,14 @@ pub async fn leaderboard(
     // O(N) write operation of recalculating rank history on every view.
     let all_profiles = ctx.data().leveling.get_leaderboard(guild_id, 1000).await?;
 
-    // Filter out bots
-    let mut profiles = Vec::new();
-    for profile in all_profiles {
-        if !is_bot(&ctx, guild_id, profile.user_id).await {
-            profiles.push(profile);
-        }
-    }
+    // OPTIMIZATION: Filter bots using cache only - don't make HTTP calls.
+    // Bots shouldn't have XP entries anyway (we filter them in process_message),
+    // but if they do, just display them rather than making slow API calls.
+    // We use a quick cache-only check that returns false (not a bot) if unknown.
+    let profiles: Vec<_> = all_profiles
+        .into_iter()
+        .filter(|profile| !is_bot_cached(&ctx, guild_id, profile.user_id))
+        .collect();
 
     // Check if we have any data
     if profiles.is_empty() {
@@ -273,9 +274,8 @@ pub async fn leaderboard(
     let total_pages = (profiles.len() + per_page - 1) / per_page;
     let mut current_page = page.unwrap_or(1).clamp(1, total_pages);
 
-    // Function to build the page content
-    // We can't easily use a closure because of the async resolve_display_name call
-    // so we'll just do it in the loop or use a macro/helper function if it gets too complex.
+    // OPTIMIZATION: We use synchronous cache-only display name resolution.
+    // This avoids slow HTTP calls and makes the leaderboard respond instantly.
 
     let msg = {
         let offset = (current_page - 1) * per_page;
@@ -296,7 +296,7 @@ pub async fn leaderboard(
         for (index, stats) in profiles.iter().skip(offset).take(per_page).enumerate() {
             let rank = offset + index + 1;
 
-            let user_name = resolve_display_name(&ctx, guild_id, stats.user_id).await;
+            let user_name = resolve_display_name_cached(&ctx, guild_id, stats.user_id);
 
             // Add medal emojis for top 3
             let medal = match rank {
@@ -438,7 +438,7 @@ pub async fn leaderboard(
         for (index, stats) in profiles.iter().skip(offset).take(per_page).enumerate() {
             let rank = offset + index + 1;
 
-            let user_name = resolve_display_name(&ctx, guild_id, stats.user_id).await;
+            let user_name = resolve_display_name_cached(&ctx, guild_id, stats.user_id);
 
             let medal = match rank {
                 1 => "🥇",
@@ -526,10 +526,42 @@ pub async fn leaderboard(
 ///
 /// Order of preference:
 /// 1. Guild nickname (from cache)
+/// 2. Username from cache
+/// 3. Fallback to mention format (no HTTP calls to avoid slowdown)
+///
+/// OPTIMIZATION: This function uses cache ONLY to avoid slow HTTP calls
+/// that would block the leaderboard command.
+fn resolve_display_name_cached(ctx: &Context<'_>, guild_id: u64, user_id: u64) -> String {
+    let guild_id_s = serenity::GuildId::from(guild_id);
+    let user_id_s = serenity::UserId::from(user_id);
+
+    // Try to get the guild member from cache first (preferred for nicknames)
+    if let Some(guild) = ctx.serenity_context().cache.guild(guild_id_s) {
+        if let Some(member) = guild.members.get(&user_id_s) {
+            // display_name() prefers nick over username
+            return member.display_name().to_string();
+        }
+    }
+
+    // Try getting the user from cache
+    if let Some(user) = ctx.serenity_context().cache.user(user_id_s) {
+        return user.name.clone();
+    }
+
+    // Final fallback: return a mention so it's still obvious who the entry is
+    // Don't make HTTP calls here - it would be too slow for leaderboards
+    format!("<@{}>", user_id)
+}
+
+/// Resolve a human-friendly display name for a user (async version with HTTP fallback).
+///
+/// Order of preference:
+/// 1. Guild nickname (from cache)
 /// 2. Guild nickname (via HTTP fetch)
 /// 3. Username from cache
 /// 4. Username via HTTP fetch
 /// 5. Mentions as a fallback (so users can still be identified)
+#[allow(dead_code)]
 async fn resolve_display_name(ctx: &Context<'_>, guild_id: u64, user_id: u64) -> String {
     let guild_id_s = serenity::GuildId::from(guild_id);
     let user_id_s = serenity::UserId::from(user_id);
@@ -569,7 +601,35 @@ async fn resolve_display_name(ctx: &Context<'_>, guild_id: u64, user_id: u64) ->
     format!("<@{}>", user_id)
 }
 
-/// Check if a user is a bot
+/// Check if a user is a bot (cache-only, fast version).
+///
+/// OPTIMIZATION: This function uses cache ONLY to avoid slow HTTP calls.
+/// If we can't determine bot status from cache, we assume NOT a bot.
+/// This is safe because:
+/// 1. Bots shouldn't have XP entries anyway (filtered in process_message)
+/// 2. Even if a bot slips through, showing them on leaderboard is harmless
+/// 3. Fast response is more important than perfect bot filtering
+fn is_bot_cached(ctx: &Context<'_>, guild_id: u64, user_id: u64) -> bool {
+    let user_id_s = serenity::UserId::from(user_id);
+    let guild_id_s = serenity::GuildId::from(guild_id);
+
+    // Try cache first
+    if let Some(user) = ctx.serenity_context().cache.user(user_id_s) {
+        return user.bot;
+    }
+
+    if let Some(guild) = ctx.serenity_context().cache.guild(guild_id_s) {
+        if let Some(member) = guild.members.get(&user_id_s) {
+            return member.user.bot;
+        }
+    }
+
+    // Can't determine from cache - assume not a bot for speed
+    false
+}
+
+/// Check if a user is a bot (async version with HTTP fallback)
+#[allow(dead_code)]
 async fn is_bot(ctx: &Context<'_>, guild_id: u64, user_id: u64) -> bool {
     let user_id_s = serenity::UserId::from(user_id);
     let guild_id_s = serenity::GuildId::from(guild_id);
