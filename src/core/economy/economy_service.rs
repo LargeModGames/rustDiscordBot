@@ -40,6 +40,7 @@ pub struct Transaction {
 pub struct DailyClaimResult {
     pub coins_awarded: i64,
     pub new_balance: i64,
+    #[allow(dead_code)]
     pub next_claim_time: DateTime<Utc>,
 }
 
