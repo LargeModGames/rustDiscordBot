@@ -134,7 +134,12 @@ async fn event_handler(
                     };
 
                     let content = if role == "user" {
-                        format!("{}: {}", msg.author.name, msg.content)
+                        // Include the user's display name AND their mention format
+                        // so the AI can ping them if needed
+                        format!(
+                            "{} (ping: <@{}>): {}",
+                            msg.author.name, msg.author.id, msg.content
+                        )
                     } else {
                         msg.content.clone()
                     };

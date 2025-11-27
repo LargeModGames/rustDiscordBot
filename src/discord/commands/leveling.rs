@@ -526,8 +526,9 @@ pub async fn leaderboard(
 ///
 /// Order of preference:
 /// 1. Guild nickname (from cache)
-/// 2. Username from cache
-/// 3. Fallback to mention format (no HTTP calls to avoid slowdown)
+/// 2. Global display name (from cache)
+/// 3. Username (from cache)
+/// 4. Fallback to mention format (no HTTP calls to avoid slowdown)
 ///
 /// OPTIMIZATION: This function uses cache ONLY to avoid slow HTTP calls
 /// that would block the leaderboard command.
@@ -544,8 +545,13 @@ fn resolve_display_name_cached(ctx: &Context<'_>, guild_id: u64, user_id: u64) -
     }
 
     // Try getting the user from cache
+    // Prefer global_name (user's display name) over name (username/handle)
     if let Some(user) = ctx.serenity_context().cache.user(user_id_s) {
-        return user.name.clone();
+        // global_name is the user's chosen display name, name is their username
+        return user
+            .global_name
+            .clone()
+            .unwrap_or_else(|| user.name.clone());
     }
 
     // Final fallback: return a mention so it's still obvious who the entry is
@@ -557,10 +563,12 @@ fn resolve_display_name_cached(ctx: &Context<'_>, guild_id: u64, user_id: u64) -
 ///
 /// Order of preference:
 /// 1. Guild nickname (from cache)
-/// 2. Guild nickname (via HTTP fetch)
-/// 3. Username from cache
-/// 4. Username via HTTP fetch
-/// 5. Mentions as a fallback (so users can still be identified)
+/// 2. Global display name (from cache)
+/// 3. Username (from cache)
+/// 4. Guild nickname (via HTTP fetch)
+/// 5. Global display name (via HTTP fetch)
+/// 6. Username (via HTTP fetch)
+/// 7. Mention as a fallback (so users can still be identified)
 #[allow(dead_code)]
 async fn resolve_display_name(ctx: &Context<'_>, guild_id: u64, user_id: u64) -> String {
     let guild_id_s = serenity::GuildId::from(guild_id);
@@ -575,8 +583,12 @@ async fn resolve_display_name(ctx: &Context<'_>, guild_id: u64, user_id: u64) ->
     }
 
     // Try getting the user from cache
+    // Prefer global_name (user's display name) over name (username/handle)
     if let Some(user) = ctx.serenity_context().cache.user(user_id_s) {
-        return user.name.clone();
+        return user
+            .global_name
+            .clone()
+            .unwrap_or_else(|| user.name.clone());
     }
 
     // As a last resort, try an HTTP fetch for the member (may fail if the user left the guild)
@@ -589,12 +601,17 @@ async fn resolve_display_name(ctx: &Context<'_>, guild_id: u64, user_id: u64) ->
         if let Some(nick) = member.nick {
             return nick;
         }
-        return member.user.name;
+        // Prefer global_name over username
+        return member
+            .user
+            .global_name
+            .clone()
+            .unwrap_or_else(|| member.user.name.clone());
     }
 
-    // Try a direct user fetch. If that succeeds, use the username.
+    // Try a direct user fetch. If that succeeds, prefer global_name.
     if let Ok(user) = ctx.serenity_context().http.get_user(user_id_s).await {
-        return user.name;
+        return user.global_name.unwrap_or(user.name);
     }
 
     // Final fallback: return a mention so it's still obvious who the entry is
