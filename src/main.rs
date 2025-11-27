@@ -602,7 +602,7 @@ async fn main() {
                     use tokio::time::sleep;
 
                     loop {
-                        tracing::info!("Daily booster sweep starting");
+                        tracing::info!("Daily booster sweep started");
 
                         // Refresh guild list every run using the cache to avoid missing new guilds
                         let guild_ids: Vec<u64> = cache.guilds().iter().map(|g| g.get()).collect();
