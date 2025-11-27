@@ -101,6 +101,20 @@ async fn event_handler(
                     .and_then(|v| v.parse::<u8>().ok())
                     .unwrap_or(50);
 
+                // First, fetch background context from announcement/sneak-peek channels.
+                // This gives the AI knowledge about the project even if the current
+                // conversation doesn't mention those details.
+                let mut context_messages =
+                    crate::discord::ai::fetch_context_channels(&ctx.http, 10).await;
+
+                // Add a separator between background context and current conversation
+                if !context_messages.is_empty() {
+                    context_messages.push(crate::core::ai::AiMessage {
+                        role: "system".to_string(),
+                        content: "--- Current conversation ---".to_string(),
+                    });
+                }
+
                 let messages = new_message
                     .channel_id
                     .messages(&ctx.http, serenity::GetMessages::new().limit(max_history))
@@ -108,7 +122,6 @@ async fn event_handler(
                     .unwrap_or_default();
 
                 // Convert to AiMessage, reversing order so it's oldest -> newest
-                let mut context_messages = Vec::new();
                 for msg in messages.iter().rev() {
                     // Skip the current message (the mention itself) if we want to handle it separately,
                     // or include it. Usually we include it as the last user message.
