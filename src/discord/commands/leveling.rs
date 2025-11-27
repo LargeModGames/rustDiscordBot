@@ -61,6 +61,13 @@ async fn show_profile(ctx: Context<'_>, user: Option<serenity::User>) -> Result<
         .get_user_profile(user_id, guild_id)
         .await?;
 
+    // Pull GreyCoin balance from the economy service so the profile shows wallet info too
+    let wallet = ctx
+        .data()
+        .economy
+        .get_wallet(user_id, guild_id)
+        .await?;
+
     let leveling = &ctx.data().leveling;
     let previous_threshold = leveling.xp_for_level(profile.level);
     let next_threshold = leveling.xp_for_next_level(profile.level);
@@ -80,6 +87,7 @@ async fn show_profile(ctx: Context<'_>, user: Option<serenity::User>) -> Result<
         .thumbnail(target_user.face())
         .field("Level", format!("**{}**", profile.level), true)
         .field("Total XP", format!("**{}**", profile.total_xp), true)
+        .field("GreyCoins", format!("🪙 {}", wallet.balance), true)
         .field(
             "Progress",
             format!(
