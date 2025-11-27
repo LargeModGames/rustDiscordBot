@@ -59,10 +59,10 @@ fn get_command_metadata(name: &str) -> CommandMetadata {
             description: Some("Check your current level and XP."),
             note: None,
         },
-        "daily_claim" => CommandMetadata {
+        "daily" => CommandMetadata {
             category: "Progress & Rewards",
             priority: 70,
-            description: Some("Claim your daily XP bonus once every 24 hours."),
+            description: Some("Claim your daily XP and GreyCoins reward once every 24 hours."),
             note: None,
         },
         "leaderboard" => CommandMetadata {

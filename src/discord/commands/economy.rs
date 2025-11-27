@@ -77,12 +77,12 @@ pub async fn balance(
     Ok(())
 }
 
-/// Claim your daily GreyCoins reward
+/// Claim your daily rewards (XP and GreyCoins)
 #[poise::command(slash_command, guild_only)]
 pub async fn daily(ctx: Context<'_>) -> Result<(), Error> {
     let user = ctx.author();
     if user.bot {
-        ctx.say("Bots don't need coins! 🤖").await?;
+        ctx.say("Bots don't need daily rewards! 🤖").await?;
         return Ok(());
     }
 
@@ -92,59 +92,152 @@ pub async fn daily(ctx: Context<'_>) -> Result<(), Error> {
         .ok_or("This command only works in servers")?
         .get();
 
-    // Attempt to claim daily reward
-    let result = ctx.data().economy.claim_daily(user_id, guild_id).await?;
+    // Detect booster status for XP bonus
+    let boosted = ctx
+        .serenity_context()
+        .cache
+        .guild(serenity::GuildId::from(guild_id))
+        .and_then(|g| g.members.get(&serenity::UserId::from(user_id)).cloned())
+        .and_then(|m| m.premium_since)
+        .is_some();
 
-    if let Some(claim) = result {
-        // Success!
-        let embed = serenity::CreateEmbed::new()
-            .title("✅ Daily Reward Claimed!")
-            .description(format!(
-                "You received **{} GreyCoins**!",
-                claim.coins_awarded
-            ))
-            .color(0x00FF00) // Green
-            .field(
-                "New Balance",
-                format!("🪙 {}", format_number(claim.new_balance)),
-                true,
-            )
-            .field(
-                "Next Claim",
-                format!("<t:{}:R>", claim.next_claim_time.timestamp()),
-                true,
-            )
-            .footer(serenity::CreateEmbedFooter::new(
-                "Come back tomorrow for more!",
-            ));
+    let member_count = ctx.guild().map(|g| g.member_count).unwrap_or(0);
 
-        ctx.send(poise::CreateReply::default().embed(embed)).await?;
-    } else {
-        // On cooldown
-        let next_claim = ctx
+    // Attempt to claim XP daily reward
+    let (xp_award, levelup_opt) = ctx
+        .data()
+        .leveling
+        .claim_daily(user_id, guild_id, boosted, member_count)
+        .await?;
+
+    // Attempt to claim GreyCoins daily reward
+    let coin_result = ctx.data().economy.claim_daily(user_id, guild_id).await?;
+
+    // Get daily goal state for display
+    let daily_goal = ctx
+        .data()
+        .leveling
+        .get_daily_goal_state(guild_id, member_count)
+        .await?;
+    let goal_progress = daily_goal.progress as f64 / daily_goal.target as f64;
+    let progress_bar =
+        build_progress_bar(goal_progress, std::cmp::min(daily_goal.target as usize, 18));
+
+    // Get current streak
+    let profile = ctx
+        .data()
+        .leveling
+        .get_user_profile(user_id, guild_id)
+        .await?;
+
+    // Both are on cooldown
+    if xp_award == 0 && coin_result.is_none() {
+        let now = chrono::Utc::now();
+        let next_xp_claim = profile.last_daily.map(|d| d + chrono::Duration::days(1));
+        let next_coin_claim = ctx
             .data()
             .economy
             .get_next_daily_time(user_id, guild_id)
             .await?;
 
-        if let Some(next_time) = next_claim {
-            let embed = serenity::CreateEmbed::new()
-                .title("⏰ Daily Reward Already Claimed")
-                .description("You've already claimed your daily reward today!")
-                .color(0xFFA500) // Orange
-                .field(
-                    "Next Claim",
-                    format!("<t:{}:R>", next_time.timestamp()),
-                    false,
-                )
-                .footer(serenity::CreateEmbedFooter::new("Check back later!"));
+        // Find the earliest next claim time
+        let next_claim = match (next_xp_claim, next_coin_claim) {
+            (Some(xp), Some(coin)) => Some(std::cmp::min(xp, coin)),
+            (Some(xp), None) => Some(xp),
+            (None, Some(coin)) => Some(coin),
+            (None, None) => None,
+        };
 
-            ctx.send(poise::CreateReply::default().embed(embed)).await?;
+        let time_str = if let Some(next_time) = next_claim {
+            let time_remaining = next_time.signed_duration_since(now);
+            if time_remaining.num_seconds() <= 0 {
+                "Ready soon".to_string()
+            } else if time_remaining.num_minutes() < 60 {
+                format!(
+                    "{}m {}s",
+                    time_remaining.num_minutes(),
+                    time_remaining.num_seconds() % 60
+                )
+            } else if time_remaining.num_hours() < 24 {
+                format!(
+                    "{}h {}m",
+                    time_remaining.num_hours(),
+                    time_remaining.num_minutes() % 60
+                )
+            } else {
+                format!(
+                    "{}d {}h",
+                    time_remaining.num_days(),
+                    time_remaining.num_hours() % 24
+                )
+            }
         } else {
-            ctx.say("You can claim your daily reward now! Try again.")
-                .await?;
+            "Unknown".to_string()
+        };
+
+        let embed = serenity::CreateEmbed::new()
+            .title("⏰ Daily Reward Already Claimed")
+            .description(format!(
+                "You have already claimed your daily reward. Time until next claim: {}",
+                time_str
+            ))
+            .color(0xFFA500) // Orange
+            .field("Streak", format!("{} days 🔥", profile.daily_streak), true)
+            .field(
+                "Server Goal",
+                format!(
+                    "{}/{} claims\n{}",
+                    daily_goal.progress, daily_goal.target, progress_bar
+                ),
+                false,
+            );
+
+        ctx.send(poise::CreateReply::default().embed(embed)).await?;
+        return Ok(());
+    }
+
+    // At least one reward was claimed - build success embed
+    let mut description_parts = Vec::new();
+
+    if xp_award > 0 {
+        if let Some(ref level_up) = levelup_opt {
+            description_parts.push(format!(
+                "✨ **+{} XP** — Leveled up to **{}**!",
+                xp_award, level_up.new_level
+            ));
+        } else {
+            description_parts.push(format!("✨ **+{} XP**", xp_award));
         }
     }
+
+    if let Some(ref claim) = coin_result {
+        description_parts.push(format!(
+            "🪙 **+{} GreyCoins** (Balance: {})",
+            claim.coins_awarded,
+            format_number(claim.new_balance)
+        ));
+    }
+
+    let description = description_parts.join("\n");
+
+    let embed = serenity::CreateEmbed::new()
+        .title("✅ Daily Reward Claimed!")
+        .description(description)
+        .color(0x00FF00) // Green
+        .field("Streak", format!("{} days 🔥", profile.daily_streak), true)
+        .field(
+            "Server Goal",
+            format!(
+                "{}/{} claims\n{}",
+                daily_goal.progress, daily_goal.target, progress_bar
+            ),
+            false,
+        )
+        .footer(serenity::CreateEmbedFooter::new(
+            "Come back tomorrow for more!",
+        ));
+
+    ctx.send(poise::CreateReply::default().embed(embed)).await?;
 
     Ok(())
 }
@@ -168,6 +261,22 @@ fn format_number(n: i64) -> String {
     }
 
     result
+}
+
+/// Build a visual progress bar using Unicode characters
+fn build_progress_bar(progress: f64, length: usize) -> String {
+    let clamped = progress.clamp(0.0, 1.0);
+    let mut filled = (clamped * length as f64).round() as usize;
+    if clamped > 0.0 && filled == 0 {
+        filled = 1;
+    }
+    if filled > length {
+        filled = length;
+    }
+    let filled_char = "▰";
+    let empty_char = "▱";
+    let bar = filled_char.repeat(filled) + &empty_char.repeat(length - filled);
+    format!("{} ({}%)", bar, (clamped * 100.0).round() as u32)
 }
 
 #[cfg(test)]

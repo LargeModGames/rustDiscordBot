@@ -545,7 +545,6 @@ async fn main() {
                 discord::commands::leveling::next_achievement(),
                 discord::commands::leveling::leaderboard(),
                 discord::commands::leveling::give_xp(),
-                discord::commands::leveling::daily_claim(),
                 discord::commands::leveling::achievements(),
                 discord::commands::economy::balance(),
                 discord::commands::economy::daily(),
