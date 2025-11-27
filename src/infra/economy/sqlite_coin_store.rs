@@ -5,6 +5,8 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use sqlx::Row;
+use std::path::Path;
+use std::str::FromStr;
 
 pub struct SqliteCoinStore {
     pool: SqlitePool,
@@ -13,11 +15,30 @@ pub struct SqliteCoinStore {
 impl SqliteCoinStore {
     /// Create a new SQLite coin store with the given database path.
     pub async fn new(database_path: &str) -> anyhow::Result<Self> {
-        let connection_string = format!("sqlite://{}", database_path);
+        // Ensure the parent directory exists
+        let path_str = database_path.trim_start_matches("sqlite://");
+        if !database_path.contains(":memory:") && !Path::new(path_str).exists() {
+            if let Some(parent) = Path::new(path_str).parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+
+        let conn_str = if database_path.starts_with("sqlite:") {
+            database_path.to_string()
+        } else {
+            format!("sqlite://{}", database_path)
+        };
+
+        // Use SqliteConnectOptions with create_if_missing to properly create the database file
+        let options = sqlx::sqlite::SqliteConnectOptions::from_str(&conn_str)?
+            .create_if_missing(true)
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+            .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+            .busy_timeout(std::time::Duration::from_secs(5));
 
         let pool = SqlitePoolOptions::new()
             .max_connections(5)
-            .connect(&connection_string)
+            .connect_with(options)
             .await?;
 
         let store = Self { pool };
