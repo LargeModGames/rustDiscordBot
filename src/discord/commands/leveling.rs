@@ -695,6 +695,7 @@ pub struct Data {
     pub logging: Arc<LoggingService<SqliteLogStore>>,
     pub github: Arc<GithubService<GithubApiClient, GithubFileStore>>,
     pub ai: Arc<AiService<OpenRouterClient>>,
+    pub economy: Arc<crate::core::economy::EconomyService<crate::infra::economy::SqliteCoinStore>>,
 }
 
 #[derive(Debug, Clone, Copy, poise::ChoiceParameter)]

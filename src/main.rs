@@ -21,6 +21,7 @@ mod discord;
 mod infra;
 
 use crate::core::ai::{AiConfig, AiService};
+use crate::core::economy::EconomyService;
 use crate::core::github::GithubService;
 use crate::core::leveling::{LevelingService, MessageContentStats};
 use crate::core::logging::{LoggingService, TrackedMessage};
@@ -33,6 +34,7 @@ use crate::discord::leveling_announcements::send_level_up_embed;
 use crate::discord::logging::events as logging_events;
 use crate::discord::{Data, Error};
 use crate::infra::ai::OpenRouterClient;
+use crate::infra::economy::SqliteCoinStore;
 use crate::infra::github::file_store::GithubFileStore;
 use crate::infra::github::github_client::GithubApiClient;
 use crate::infra::leveling::SqliteXpStore;
@@ -265,6 +267,15 @@ async fn event_handler(
                         eprintln!("Error processing XP for message: {}", e);
                     }
                 }
+
+                // Try to award random coins (silent - no announcement)
+                if let Err(e) = data
+                    .economy
+                    .try_random_message_reward(user_id, guild_id)
+                    .await
+                {
+                    tracing::debug!("Failed to award random message coins: {}", e);
+                }
             }
 
             // Cache the message for logging so delete/edit events are reliable even when
@@ -496,6 +507,13 @@ async fn main() {
     };
     let ai_service = Arc::new(AiService::new(ai_client, system_prompt, ai_config));
 
+    // Economy Service
+    let economy_db_path = format!("{}/economy.db", data_dir);
+    let coin_store = SqliteCoinStore::new(&economy_db_path)
+        .await
+        .expect("Failed to initialize economy store");
+    let economy_service = Arc::new(EconomyService::new(coin_store));
+
     // Create the data structure that will be shared across all commands
     let data = Data {
         leveling: Arc::clone(&leveling_service),
@@ -504,6 +522,7 @@ async fn main() {
         logging: Arc::clone(&logging_service),
         github: Arc::clone(&github_service),
         ai: Arc::clone(&ai_service),
+        economy: Arc::clone(&economy_service),
     };
 
     // ========================================================================
@@ -528,6 +547,8 @@ async fn main() {
                 discord::commands::leveling::give_xp(),
                 discord::commands::leveling::daily_claim(),
                 discord::commands::leveling::achievements(),
+                discord::commands::economy::balance(),
+                discord::commands::economy::daily(),
                 discord::commands::server_stats::serverstats(),
                 discord::commands::timezones::timezones(),
                 crate::discord::logging::commands::logging(),

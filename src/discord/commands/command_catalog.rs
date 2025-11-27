@@ -1,6 +1,8 @@
 // Discord commands module.
 // Each feature gets its own command file.
 
+pub mod economy;
+
 pub mod leveling;
 
 pub mod server_stats;

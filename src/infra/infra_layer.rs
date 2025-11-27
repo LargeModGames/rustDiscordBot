@@ -15,3 +15,6 @@ pub mod github;
 
 #[path = "ai/mod.rs"]
 pub mod ai;
+
+#[path = "economy/mod.rs"]
+pub mod economy;
