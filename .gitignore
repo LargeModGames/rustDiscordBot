@@ -16,3 +16,4 @@ AGENTS.md
 # So testing databases aren't included
 /data/
 
+service-account.json

@@ -20,7 +20,8 @@ mod discord;
 #[path = "infra/infra_layer.rs"]
 mod infra;
 
-use crate::core::ai::{AiConfig, AiService};
+use crate::core::ai::models::AiTool;
+use crate::core::ai::{AiConfig, AiService, FunctionCallHandler};
 use crate::core::economy::EconomyService;
 use crate::core::github::GithubService;
 use crate::core::leveling::{LevelingService, MessageContentStats};
@@ -37,6 +38,7 @@ use crate::infra::ai::{GeminiClient, OpenRouterClient};
 use crate::infra::economy::SqliteCoinStore;
 use crate::infra::github::file_store::GithubFileStore;
 use crate::infra::github::github_client::GithubApiClient;
+use crate::infra::google_docs::GoogleDocsFunctionHandler;
 use crate::infra::leveling::SqliteXpStore;
 use crate::infra::logging::sqlite_store::SqliteLogStore;
 use crate::infra::server_stats::JsonServerStatsStore;
@@ -505,6 +507,48 @@ async fn main() {
 
             tracing::info!("Using Gemini AI provider with model: {}", gemini_model);
 
+            // Set up Google Docs function handler
+            // Try to use service account auth for multi-tab support, fall back to public export
+            let handler = match GoogleDocsFunctionHandler::from_env_with_auth().await {
+                Ok(h) => {
+                    tracing::info!("Google Docs: Using service account authentication (multi-tab support enabled)");
+                    h
+                }
+                Err(e) => {
+                    tracing::info!("Google Docs: Service account not configured ({}), using public export (first tab only)", e);
+                    GoogleDocsFunctionHandler::from_env()
+                }
+            };
+
+            // Check if any project docs are configured
+            let has_project_docs = handler.supported_functions().len() > 1; // More than just read_google_doc
+
+            // Enable Google Search + Google Docs reading
+            let enable_search = std::env::var("AI_ENABLE_GOOGLE_SEARCH")
+                .map(|v| v.to_lowercase() == "true")
+                .unwrap_or(true); // Default to enabled
+
+            let (tools, function_handler): (
+                Option<Vec<AiTool>>,
+                Option<Box<dyn crate::core::ai::FunctionCallHandler>>,
+            ) = {
+                let tools = handler.get_tools(enable_search);
+                tracing::info!(
+                    "Gemini tools enabled: Google Search={}, Google Docs functions={}",
+                    enable_search,
+                    handler.supported_functions().join(", ")
+                );
+
+                if has_project_docs {
+                    tracing::info!("Project documents configured for AI access");
+                }
+
+                (
+                    Some(tools),
+                    Some(Box::new(handler) as Box<dyn crate::core::ai::FunctionCallHandler>),
+                )
+            };
+
             let gemini_client = GeminiClient::new(gemini_api_key);
             let ai_config = AiConfig {
                 model: gemini_model,
@@ -524,13 +568,24 @@ async fn main() {
                     .ok()
                     .and_then(|v| v.parse().ok()),
                 reasoning_effort: std::env::var("AI_REASONING_EFFORT").ok(),
+                tools,
+                tool_config: None, // Default tool behavior (AUTO)
             };
 
-            Arc::new(AiService::new(
-                Box::new(gemini_client) as Box<dyn crate::core::ai::AiProvider>,
-                system_prompt,
-                ai_config,
-            ))
+            // Create AI service with or without function handler
+            match function_handler {
+                Some(handler) => Arc::new(AiService::with_function_handler(
+                    Box::new(gemini_client) as Box<dyn crate::core::ai::AiProvider>,
+                    system_prompt,
+                    ai_config,
+                    handler,
+                )),
+                None => Arc::new(AiService::new(
+                    Box::new(gemini_client) as Box<dyn crate::core::ai::AiProvider>,
+                    system_prompt,
+                    ai_config,
+                )),
+            }
         } else {
             // OpenRouter configuration (default)
             let openrouter_api_key = std::env::var("OPENROUTER_API_KEY")
@@ -568,6 +623,8 @@ async fn main() {
                 repetition_penalty: Some(1.0),
                 reasoning_enabled,
                 reasoning_effort,
+                tools: None, // OpenRouter: limited tool support depends on model
+                tool_config: None,
             };
 
             Arc::new(AiService::new(

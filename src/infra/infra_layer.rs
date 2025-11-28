@@ -18,3 +18,6 @@ pub mod ai;
 
 #[path = "economy/mod.rs"]
 pub mod economy;
+
+#[path = "google_docs/mod.rs"]
+pub mod google_docs;

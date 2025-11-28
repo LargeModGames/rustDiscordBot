@@ -106,6 +106,9 @@ impl AiProvider for OpenRouterClient {
         Ok(AiProviderResponse {
             content,
             thinking: None,
+            grounding_metadata: None,
+            url_context_metadata: None,
+            function_calls: None,
         })
     }
 }
