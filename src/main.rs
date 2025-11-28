@@ -33,7 +33,7 @@ use crate::discord::github::dispatcher as github_dispatcher;
 use crate::discord::leveling_announcements::send_level_up_embed;
 use crate::discord::logging::events as logging_events;
 use crate::discord::{Data, Error};
-use crate::infra::ai::OpenRouterClient;
+use crate::infra::ai::{GeminiClient, OpenRouterClient};
 use crate::infra::economy::SqliteCoinStore;
 use crate::infra::github::file_store::GithubFileStore;
 use crate::infra::github::github_client::GithubApiClient;
@@ -473,39 +473,115 @@ async fn main() {
     );
 
     // AI Service
-    let openrouter_api_key = std::env::var("OPENROUTER_API_KEY")
-        .expect("Missing OPENROUTER_API_KEY environment variable!");
-    let openrouter_model = std::env::var("OPENROUTER_MODEL")
-        .unwrap_or_else(|_| "deepseek/deepseek-chat-v3.1:free".to_string());
-    let system_prompt = if let Ok(path) = std::env::var("OPENROUTER_SYSTEM_PROMPT_FILE") {
+    // -------------------------------------------------------------------------
+    // The bot supports two AI providers:
+    // 1. OpenRouter (default) - Access to many models via openrouter.ai
+    // 2. Gemini - Google's Gemini API via ai.google.dev
+    //
+    // Set AI_PROVIDER=gemini to use Gemini, otherwise OpenRouter is used.
+    // -------------------------------------------------------------------------
+    let ai_provider = std::env::var("AI_PROVIDER").unwrap_or_else(|_| "openrouter".to_string());
+
+    // Load system prompt (shared between providers)
+    let system_prompt = if let Ok(path) = std::env::var("AI_SYSTEM_PROMPT_FILE") {
         std::fs::read_to_string(&path).unwrap_or_else(|e| {
             tracing::warn!("Failed to read system prompt file at {}: {}", path, e);
             DEFAULT_SYSTEM_PROMPT.to_string()
         })
     } else {
-        std::env::var("OPENROUTER_SYSTEM_PROMPT")
+        std::env::var("AI_SYSTEM_PROMPT")
+            .or_else(|_| std::env::var("OPENROUTER_SYSTEM_PROMPT")) // Backwards compat
             .unwrap_or_else(|_| DEFAULT_SYSTEM_PROMPT.to_string())
     };
-    let reasoning_enabled = std::env::var("OPENROUTER_REASONING_ENABLED")
-        .ok()
-        .and_then(|v| v.parse::<bool>().ok());
-    let reasoning_effort = std::env::var("OPENROUTER_REASONING_EFFORT").ok();
-    let _max_history = std::env::var("OPENROUTER_MAX_HISTORY")
+
+    // Build AI service based on provider
+    let ai_service: Arc<AiService<Box<dyn crate::core::ai::AiProvider>>> =
+        if ai_provider.to_lowercase() == "gemini" {
+            // Gemini configuration
+            let gemini_api_key = std::env::var("GEMINI_API_KEY")
+                .expect("Missing GEMINI_API_KEY environment variable when AI_PROVIDER=gemini");
+            let gemini_model =
+                std::env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-2.5-flash".to_string());
+
+            tracing::info!("Using Gemini AI provider with model: {}", gemini_model);
+
+            let gemini_client = GeminiClient::new(gemini_api_key);
+            let ai_config = AiConfig {
+                model: gemini_model,
+                temperature: std::env::var("AI_TEMPERATURE")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0.7),
+                max_tokens: std::env::var("AI_MAX_TOKENS")
+                    .ok()
+                    .and_then(|v| v.parse().ok()),
+                top_p: std::env::var("AI_TOP_P")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .or(Some(1.0)),
+                repetition_penalty: None, // Not supported by Gemini
+                reasoning_enabled: std::env::var("AI_REASONING_ENABLED")
+                    .ok()
+                    .and_then(|v| v.parse().ok()),
+                reasoning_effort: std::env::var("AI_REASONING_EFFORT").ok(),
+            };
+
+            Arc::new(AiService::new(
+                Box::new(gemini_client) as Box<dyn crate::core::ai::AiProvider>,
+                system_prompt,
+                ai_config,
+            ))
+        } else {
+            // OpenRouter configuration (default)
+            let openrouter_api_key = std::env::var("OPENROUTER_API_KEY")
+                .expect("Missing OPENROUTER_API_KEY environment variable!");
+            let openrouter_model = std::env::var("OPENROUTER_MODEL")
+                .unwrap_or_else(|_| "deepseek/deepseek-chat-v3.1:free".to_string());
+
+            tracing::info!(
+                "Using OpenRouter AI provider with model: {}",
+                openrouter_model
+            );
+
+            let reasoning_enabled = std::env::var("OPENROUTER_REASONING_ENABLED")
+                .or_else(|_| std::env::var("AI_REASONING_ENABLED"))
+                .ok()
+                .and_then(|v| v.parse::<bool>().ok());
+            let reasoning_effort = std::env::var("OPENROUTER_REASONING_EFFORT")
+                .or_else(|_| std::env::var("AI_REASONING_EFFORT"))
+                .ok();
+
+            let ai_client = OpenRouterClient::new(openrouter_api_key);
+            let ai_config = AiConfig {
+                model: openrouter_model,
+                temperature: std::env::var("AI_TEMPERATURE")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0.7),
+                max_tokens: std::env::var("AI_MAX_TOKENS")
+                    .ok()
+                    .and_then(|v| v.parse().ok()),
+                top_p: std::env::var("AI_TOP_P")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .or(Some(1.0)),
+                repetition_penalty: Some(1.0),
+                reasoning_enabled,
+                reasoning_effort,
+            };
+
+            Arc::new(AiService::new(
+                Box::new(ai_client) as Box<dyn crate::core::ai::AiProvider>,
+                system_prompt,
+                ai_config,
+            ))
+        };
+
+    let _max_history = std::env::var("AI_MAX_HISTORY")
+        .or_else(|_| std::env::var("OPENROUTER_MAX_HISTORY")) // Backwards compat
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(50); // Default to 50 messages if not set
-
-    let ai_client = OpenRouterClient::new(openrouter_api_key);
-    let ai_config = AiConfig {
-        model: openrouter_model,
-        temperature: 0.7,
-        max_tokens: None,
-        top_p: Some(1.0),
-        repetition_penalty: Some(1.0),
-        reasoning_enabled,
-        reasoning_effort,
-    };
-    let ai_service = Arc::new(AiService::new(ai_client, system_prompt, ai_config));
+        .unwrap_or(50);
 
     // Economy Service
     let economy_db_path = format!("{}/economy.db", data_dir);

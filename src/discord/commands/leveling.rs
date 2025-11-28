@@ -8,13 +8,13 @@
 // This layer is THIN - no business logic, just translation.
 
 use crate::core::ai::ai_service::AiService;
+use crate::core::ai::AiProvider;
 use crate::core::github::GithubService;
 use crate::core::leveling::achievements::get_all_achievements;
 use crate::core::leveling::{Difficulty, LevelingService, XpSource};
 use crate::core::logging::LoggingService;
 use crate::core::server_stats::ServerStatsService;
 use crate::core::timezones::TimezoneService;
-use crate::infra::ai::openrouter_client::OpenRouterClient;
 use crate::infra::github::file_store::GithubFileStore;
 use crate::infra::github::github_client::GithubApiClient;
 use crate::infra::leveling::SqliteXpStore;
@@ -702,7 +702,9 @@ pub struct Data {
     pub timezones: Arc<TimezoneService>,
     pub logging: Arc<LoggingService<SqliteLogStore>>,
     pub github: Arc<GithubService<GithubApiClient, GithubFileStore>>,
-    pub ai: Arc<AiService<OpenRouterClient>>,
+    /// AI service with dynamic provider (supports OpenRouter, Gemini, etc.)
+    /// Uses a trait object to allow switching providers at runtime via config.
+    pub ai: Arc<AiService<Box<dyn AiProvider>>>,
     pub economy: Arc<crate::core::economy::EconomyService<crate::infra::economy::SqliteCoinStore>>,
 }
 

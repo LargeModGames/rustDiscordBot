@@ -1,14 +1,33 @@
-use super::models::{AiConfig, AiMessage, AiResponse};
+use super::models::{AiConfig, AiMessage, AiProviderResponse, AiResponse};
 use async_trait::async_trait;
 use std::error::Error;
 
 #[async_trait]
 pub trait AiProvider: Send + Sync {
+    /// Sends a chat completion request to the AI provider.
+    ///
+    /// Returns an `AiProviderResponse` containing both the main content
+    /// and optional thinking/reasoning from the model.
     async fn chat_complete(
         &self,
         messages: &[AiMessage],
         config: &AiConfig,
-    ) -> Result<String, Box<dyn Error + Send + Sync>>;
+    ) -> Result<AiProviderResponse, Box<dyn Error + Send + Sync>>;
+}
+
+// Blanket implementation for Box<dyn AiProvider>
+// This allows us to use trait objects in the AiService, enabling
+// runtime switching between different AI providers (OpenRouter, Gemini, etc.)
+#[async_trait]
+impl AiProvider for Box<dyn AiProvider> {
+    async fn chat_complete(
+        &self,
+        messages: &[AiMessage],
+        config: &AiConfig,
+    ) -> Result<AiProviderResponse, Box<dyn Error + Send + Sync>> {
+        // Delegate to the inner provider
+        (**self).chat_complete(messages, config).await
+    }
 }
 
 pub struct AiService<P: AiProvider> {
@@ -38,11 +57,15 @@ impl<P: AiProvider> AiService<P> {
         });
         messages.extend(context_messages.iter().cloned());
 
-        // Call provider
-        let response_content = self.provider.chat_complete(&messages, &self.config).await?;
+        // Call provider - now returns AiProviderResponse with thinking and content
+        let provider_response = self.provider.chat_complete(&messages, &self.config).await?;
 
-        // Parse response
-        let (answer, reasoning) = self.parse_response(&response_content);
+        // Parse response for XML tags (some models use <answer>/<rationale> tags)
+        let (answer, xml_reasoning) = self.parse_response(&provider_response.content);
+
+        // Prefer provider's built-in thinking (Gemini) over XML-parsed reasoning
+        // This ensures we get the native thinking experience when available
+        let reasoning = provider_response.thinking.or(xml_reasoning);
 
         Ok(AiResponse { answer, reasoning })
     }

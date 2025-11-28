@@ -1,5 +1,5 @@
 use crate::core::ai::{
-    models::{AiConfig, AiMessage},
+    models::{AiConfig, AiMessage, AiProviderResponse},
     AiProvider,
 };
 use async_trait::async_trait;
@@ -27,7 +27,7 @@ impl AiProvider for OpenRouterClient {
         &self,
         messages: &[AiMessage],
         config: &AiConfig,
-    ) -> Result<String, Box<dyn Error + Send + Sync>> {
+    ) -> Result<AiProviderResponse, Box<dyn Error + Send + Sync>> {
         let url = "https://openrouter.ai/api/v1/chat/completions";
 
         let mut payload = json!({
@@ -95,12 +95,17 @@ impl AiProvider for OpenRouterClient {
 
         let response_json: serde_json::Value = response.json().await?;
 
-        // Extract content
+        // Extract content from the response
         let content = response_json["choices"][0]["message"]["content"]
             .as_str()
             .ok_or("Failed to parse response content")?
             .to_string();
 
-        Ok(content)
+        // OpenRouter doesn't have separate thinking field in the same way,
+        // so we return None for thinking (the XML parsing in AiService handles it)
+        Ok(AiProviderResponse {
+            content,
+            thinking: None,
+        })
     }
 }
