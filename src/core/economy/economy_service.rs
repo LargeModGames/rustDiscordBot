@@ -157,7 +157,7 @@ pub struct EconomyConfig {
 impl Default for EconomyConfig {
     fn default() -> Self {
         Self {
-            daily_reward: 100,
+            daily_reward: 10,
             daily_cooldown_hours: 24,
             message_reward_chance: 0.05, // 5%
             message_reward_min: 1,
@@ -474,7 +474,7 @@ mod tests {
         // First claim should succeed
         let result = service.claim_daily(1, 1).await.unwrap();
         assert!(result.is_some());
-        assert_eq!(result.unwrap().coins_awarded, 100);
+        assert_eq!(result.unwrap().coins_awarded, 10);
 
         // Second claim immediately should fail (on cooldown)
         let result = service.claim_daily(1, 1).await.unwrap();
