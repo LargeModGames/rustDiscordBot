@@ -348,6 +348,7 @@ impl GoogleDocsClient {
     }
 
     /// Pre-fetches documents at startup and returns their combined content.
+    #[allow(dead_code)]
     pub async fn prefetch_for_system_prompt(
         &self,
         doc_ids: &[&str],
@@ -383,6 +384,7 @@ impl GoogleDocsClient {
     }
 
     /// Pre-fetches from GOOGLE_DOC_IDS environment variable.
+    #[allow(dead_code)]
     pub async fn prefetch_from_env(&self) -> Result<String, Box<dyn Error + Send + Sync>> {
         let doc_ids_str = std::env::var("GOOGLE_DOC_IDS")
             .map_err(|_| "GOOGLE_DOC_IDS environment variable not set")?;
