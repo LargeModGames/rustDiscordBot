@@ -537,28 +537,6 @@ async fn main() {
             Option<Box<dyn crate::core::ai::FunctionCallHandler>>,
         ) = {
             let tools = handler.get_tools(enable_search);
-
-            // If both Google Search and Function Declarations are present, Gemini
-            // may reject requests that mix built-in tools with function calling by
-            // default. Historically we required opting-in via environment variable
-            // `GEMINI_ALLOW_MIXED_TOOLS_AND_FUNCTIONS=true` to avoid 400 errors.
-            // For convenience, if the user enabled Google Search and we also have
-            // function tools registered (e.g. Google Docs), automatically set the
-            // env var so Gemini will accept the mixed request. We still allow the
-            // explicit environment override to opt out of this behavior.
-            let contains_google_search = tools.iter().any(|t| matches!(t, AiTool::GoogleSearch));
-            let contains_fn_decl = tools
-                .iter()
-                .any(|t| matches!(t, AiTool::FunctionDeclaration(_)));
-            if contains_google_search && contains_fn_decl {
-                // Only set it if it's not already set in the environment
-                if std::env::var("GEMINI_ALLOW_MIXED_TOOLS_AND_FUNCTIONS").is_err() {
-                    tracing::info!(
-                        "Detected Google Search + function declaration tools; enabling GEMINI_ALLOW_MIXED_TOOLS_AND_FUNCTIONS=true to allow mixing built-in tools and functions in Gemini requests."
-                    );
-                    std::env::set_var("GEMINI_ALLOW_MIXED_TOOLS_AND_FUNCTIONS", "true");
-                }
-            }
             tracing::info!(
                 "Gemini tools enabled: Google Search={}, Google Docs functions={}",
                 enable_search,
