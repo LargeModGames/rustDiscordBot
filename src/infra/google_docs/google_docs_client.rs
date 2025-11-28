@@ -585,9 +585,7 @@ pub fn read_google_doc_function() -> FunctionDef {
         "document_id".to_string(),
         PropertyDef {
             prop_type: "string".to_string(),
-            description: Some(
-                "The Google Doc document ID or full URL.".to_string(),
-            ),
+            description: Some("The Google Doc document ID or full URL.".to_string()),
             enum_values: None,
         },
     );
@@ -623,7 +621,8 @@ impl ProjectDocsConfig {
 
         if self.story_bible_id.is_some() {
             doc_names.push("story_bible".to_string());
-            doc_descriptions.push("story_bible: Character backgrounds, world-building, lore".to_string());
+            doc_descriptions
+                .push("story_bible: Character backgrounds, world-building, lore".to_string());
         }
         if self.script_id.is_some() {
             doc_names.push("script".to_string());
@@ -631,7 +630,8 @@ impl ProjectDocsConfig {
         }
         if self.writers_notes_id.is_some() {
             doc_names.push("writers_notes".to_string());
-            doc_descriptions.push("writers_notes: Ideas, brainstorming, development notes".to_string());
+            doc_descriptions
+                .push("writers_notes: Ideas, brainstorming, development notes".to_string());
         }
         for (name, _, desc) in &self.additional_docs {
             doc_names.push(name.clone());
@@ -686,7 +686,10 @@ pub struct GoogleDocsFunctionHandler {
 
 impl GoogleDocsFunctionHandler {
     pub fn new(client: GoogleDocsClient, project_docs: ProjectDocsConfig) -> Self {
-        Self { client, project_docs }
+        Self {
+            client,
+            project_docs,
+        }
     }
 
     pub async fn from_env_with_auth() -> Result<Self, Box<dyn Error + Send + Sync>> {
@@ -772,7 +775,9 @@ impl FunctionCallHandler for GoogleDocsFunctionHandler {
                     .and_then(|v| v.as_str())
                     .ok_or("Missing 'document_name' argument")?;
 
-                let doc_id = self.project_docs.get_doc_id(doc_name)
+                let doc_id = self
+                    .project_docs
+                    .get_doc_id(doc_name)
                     .ok_or_else(|| format!("Unknown document: '{}'", doc_name))?;
 
                 let result = if self.client.auth.is_some() {
