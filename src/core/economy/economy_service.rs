@@ -327,6 +327,51 @@ impl<S: CoinStore> EconomyService<S> {
         self.store.get_transactions(user_id, guild_id, limit).await
     }
 
+    /// Purchase a shop item with coins.
+    ///
+    /// Deducts the item price from the user's balance and returns the new balance.
+    /// Does not add item to inventory - that should be done separately.
+    pub async fn deduct_coins_for_purchase(
+        &self,
+        user_id: u64,
+        guild_id: u64,
+        amount: i64,
+        reason: String,
+    ) -> Result<i64, EconomyError> {
+        if amount <= 0 {
+            return Err(EconomyError::StoreError(
+                "Amount must be positive".to_string(),
+            ));
+        }
+
+        // Check if user has sufficient funds
+        let wallet = self.store.get_wallet(user_id, guild_id).await?;
+        if wallet.balance < amount {
+            return Err(EconomyError::InsufficientFunds {
+                required: amount,
+                available: wallet.balance,
+            });
+        }
+
+        // Deduct coins
+        let new_balance = wallet.balance - amount;
+        self.store
+            .update_balance(user_id, guild_id, new_balance)
+            .await?;
+
+        // Log the transaction (negative amount to indicate purchase)
+        let transaction = Transaction {
+            user_id,
+            guild_id,
+            amount: -amount, // Negative for purchase
+            reason,
+            timestamp: Utc::now(),
+        };
+        self.store.log_transaction(transaction).await?;
+
+        Ok(new_balance)
+    }
+
     /// Get the next daily claim time for a user.
     pub async fn get_next_daily_time(
         &self,

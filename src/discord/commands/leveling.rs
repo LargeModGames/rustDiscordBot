@@ -62,11 +62,7 @@ async fn show_profile(ctx: Context<'_>, user: Option<serenity::User>) -> Result<
         .await?;
 
     // Pull GreyCoin balance from the economy service so the profile shows wallet info too
-    let wallet = ctx
-        .data()
-        .economy
-        .get_wallet(user_id, guild_id)
-        .await?;
+    let wallet = ctx.data().economy.get_wallet(user_id, guild_id).await?;
 
     let leveling = &ctx.data().leveling;
     let previous_threshold = leveling.xp_for_level(profile.level);
@@ -706,6 +702,8 @@ pub struct Data {
     /// Uses a trait object to allow switching providers at runtime via config.
     pub ai: Arc<AiService<Box<dyn AiProvider>>>,
     pub economy: Arc<crate::core::economy::EconomyService<crate::infra::economy::SqliteCoinStore>>,
+    pub inventory:
+        Arc<crate::core::economy::InventoryService<crate::infra::economy::SqliteInventoryStore>>,
 }
 
 #[derive(Debug, Clone, Copy, poise::ChoiceParameter)]

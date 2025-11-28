@@ -651,6 +651,24 @@ async fn main() {
         .expect("Failed to initialize economy store");
     let economy_service = Arc::new(EconomyService::new(coin_store));
 
+    // Inventory Service (uses same SQLite pool as economy for shared schema)
+    let inventory_conn_str = format!("sqlite://{}", economy_db_path);
+    let inventory_options = sqlx::sqlite::SqliteConnectOptions::from_str(&inventory_conn_str)
+        .expect("Invalid connection string")
+        .create_if_missing(true)
+        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+        .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+        .busy_timeout(std::time::Duration::from_secs(5));
+
+    let inventory_pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(5)
+        .connect_with(inventory_options)
+        .await
+        .expect("Failed to connect to inventory DB");
+
+    let inventory_store = crate::infra::economy::SqliteInventoryStore::new(inventory_pool);
+    let inventory_service = Arc::new(crate::core::economy::InventoryService::new(inventory_store));
+
     // Create the data structure that will be shared across all commands
     let data = Data {
         leveling: Arc::clone(&leveling_service),
@@ -660,6 +678,7 @@ async fn main() {
         github: Arc::clone(&github_service),
         ai: Arc::clone(&ai_service),
         economy: Arc::clone(&economy_service),
+        inventory: Arc::clone(&inventory_service),
     };
 
     // ========================================================================
@@ -685,6 +704,8 @@ async fn main() {
                 discord::commands::leveling::achievements(),
                 discord::commands::economy::balance(),
                 discord::commands::economy::daily(),
+                discord::commands::shop::shop(),
+                discord::commands::shop::inventory(),
                 discord::commands::server_stats::serverstats(),
                 discord::commands::timezones::timezones(),
                 crate::discord::logging::commands::logging(),

@@ -92,6 +92,31 @@ impl SqliteCoinStore {
         .execute(&self.pool)
         .await?;
 
+        // Create inventory table
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS inventory (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                guild_id INTEGER NOT NULL,
+                item_id TEXT NOT NULL,
+                acquired_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Create index on inventory for faster queries
+        sqlx::query(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_inventory_user_guild 
+            ON inventory(user_id, guild_id, item_id)
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
         Ok(())
     }
 }

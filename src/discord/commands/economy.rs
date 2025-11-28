@@ -103,6 +103,45 @@ pub async fn daily(ctx: Context<'_>) -> Result<(), Error> {
 
     let member_count = ctx.guild().map(|g| g.member_count).unwrap_or(0);
 
+    // Check if streak would be lost and use Daily Streak Saver if available
+    let mut streak_saver_used = false;
+    let profile_before = ctx
+        .data()
+        .leveling
+        .get_user_profile(user_id, guild_id)
+        .await?;
+
+    // Check if daily was missed (>24hrs) and user has a streak to preserve
+    if let Some(last_daily) = profile_before.last_daily {
+        let now = chrono::Utc::now();
+        let hours_since_last = now.signed_duration_since(last_daily).num_hours();
+
+        if hours_since_last >= 24 && profile_before.daily_streak > 0 {
+            // Check if user has a Daily Streak Saver
+            if ctx
+                .data()
+                .inventory
+                .has_item(
+                    user_id,
+                    guild_id,
+                    &crate::core::economy::ItemId::DailyStreakSaver,
+                )
+                .await?
+            {
+                // Consume the item
+                ctx.data()
+                    .inventory
+                    .consume_item(
+                        user_id,
+                        guild_id,
+                        &crate::core::economy::ItemId::DailyStreakSaver,
+                    )
+                    .await?;
+                streak_saver_used = true;
+            }
+        }
+    }
+
     // Attempt to claim XP daily reward
     let (xp_award, levelup_opt) = ctx
         .data()
@@ -220,10 +259,21 @@ pub async fn daily(ctx: Context<'_>) -> Result<(), Error> {
 
     let description = description_parts.join("\n");
 
-    let embed = serenity::CreateEmbed::new()
+    let mut embed = serenity::CreateEmbed::new()
         .title("✅ Daily Reward Claimed!")
         .description(description)
-        .color(0x00FF00) // Green
+        .color(0x00FF00); // Green
+
+    // Add streak saver notification if it was used
+    if streak_saver_used {
+        embed = embed.field(
+            "🛡️ Streak Saver Used!",
+            "Your Daily Streak Saver protected your streak!",
+            false,
+        );
+    }
+
+    embed = embed
         .field("Streak", format!("{} days 🔥", profile.daily_streak), true)
         .field(
             "Server Goal",
