@@ -710,17 +710,20 @@ impl AiProvider for GeminiClient {
         messages: &[AiMessage],
         config: &AiConfig,
     ) -> Result<AiProviderResponse, Box<dyn Error + Send + Sync>> {
-        // Build the URL with API key as query parameter
-        // Format: https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent
-        let url = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-            config.model, self.api_key
-        );
+        // Create a mutable copy of the config to allow model switching
+        let mut current_config = config.clone();
 
-        // Separate system messages from conversation
-        // Gemini handles system instructions differently - they're a separate field
-        let system_instruction: Option<Content> =
-            messages
+        loop {
+            // Build the URL with API key as query parameter
+            // Format: https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent
+            let url = format!(
+                "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
+                current_config.model, self.api_key
+            );
+
+            // Separate system messages from conversation
+            // Gemini handles system instructions differently - they're a separate field
+            let system_instruction: Option<Content> = messages
                 .iter()
                 .find(|m| m.role == "system")
                 .map(|m| Content {
@@ -728,195 +731,221 @@ impl AiProvider for GeminiClient {
                     parts: vec![Self::text_part(m.content.clone())],
                 });
 
-        // Convert non-system messages to Gemini format
-        let contents: Vec<Content> = messages
-            .iter()
-            .filter(|m| m.role != "system")
-            .map(Self::convert_message)
-            .collect();
+            // Convert non-system messages to Gemini format
+            let contents: Vec<Content> = messages
+                .iter()
+                .filter(|m| m.role != "system")
+                .map(Self::convert_message)
+                .collect();
 
-        // Build thinking config if reasoning is enabled
-        // NOTE: thinkingConfig is only supported by Gemini 2.5+ models.
-        // We check the model name to avoid sending it to unsupported models.
-        let supports_thinking = config.model.contains("2.5") || config.model.contains("gemini-3");
+            // Build thinking config if reasoning is enabled
+            // NOTE: thinkingConfig is only supported by Gemini 2.5+ models.
+            // We check the model name to avoid sending it to unsupported models.
+            let supports_thinking =
+                current_config.model.contains("2.5") || current_config.model.contains("gemini-3");
 
-        let thinking_config = if supports_thinking {
-            config.reasoning_enabled.and_then(|enabled| {
-                if enabled {
-                    // Map reasoning effort to thinking budget
-                    // "low" = smaller budget, "high" = larger budget
-                    // Use -1 for dynamic thinking (model decides)
-                    let thinking_budget = config.reasoning_effort.as_ref().map(|effort| {
-                        match effort.to_lowercase().as_str() {
-                            "low" => 1024,
-                            "medium" => 4096,
-                            "high" => 16384,
-                            _ => -1, // Default to dynamic
-                        }
-                    });
+            let thinking_config = if supports_thinking {
+                current_config.reasoning_enabled.and_then(|enabled| {
+                    if enabled {
+                        // Map reasoning effort to thinking budget
+                        // "low" = smaller budget, "high" = larger budget
+                        // Use -1 for dynamic thinking (model decides)
+                        let thinking_budget =
+                            current_config.reasoning_effort.as_ref().map(|effort| {
+                                match effort.to_lowercase().as_str() {
+                                    "low" => 1024,
+                                    "medium" => 4096,
+                                    "high" => 16384,
+                                    _ => -1, // Default to dynamic
+                                }
+                            });
 
-                    Some(ThinkingConfig {
-                        include_thoughts: Some(true),
-                        thinking_budget,
-                    })
+                        Some(ThinkingConfig {
+                            include_thoughts: Some(true),
+                            thinking_budget,
+                        })
+                    } else {
+                        // Explicitly disable thinking by setting budget to 0
+                        Some(ThinkingConfig {
+                            include_thoughts: Some(false),
+                            thinking_budget: Some(0),
+                        })
+                    }
+                })
+            } else {
+                // Model doesn't support thinking, don't send the config
+                None
+            };
+
+            // Build generation config (includes thinking_config for 2.5+ models)
+            let generation_config = GenerationConfig {
+                temperature: Some(current_config.temperature),
+                max_output_tokens: current_config.max_tokens,
+                top_p: current_config.top_p,
+                top_k: None,
+                thinking_config,
+            };
+
+            // Convert tools to Gemini format if provided
+            let tools = current_config
+                .tools
+                .as_ref()
+                .map(|t| Self::convert_tools(t))
+                .filter(|t| !t.is_empty());
+
+            // Convert tool config if provided
+            let tool_config = current_config
+                .tool_config
+                .as_ref()
+                .map(Self::convert_tool_config);
+
+            // Build the request
+            let request = GenerateContentRequest {
+                contents,
+                system_instruction,
+                generation_config: Some(generation_config),
+                tools,
+                tool_config,
+            };
+
+            // Log request for debugging (be careful not to log the API key!)
+            tracing::debug!(
+                "Gemini request to model {}: {} messages, tools: {:?}",
+                current_config.model,
+                messages.len(),
+                current_config.tools.as_ref().map(|t| t.len()).unwrap_or(0)
+            );
+
+            // Send the request
+            let response = self
+                .client
+                .post(&url)
+                .header("Content-Type", "application/json")
+                .json(&request)
+                .send()
+                .await?;
+
+            // Handle rate limits (429) with fallback
+            if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                tracing::warn!(
+                    "Gemini API rate limit reached for model: {}",
+                    current_config.model
+                );
+
+                if let Some(next_model) =
+                    crate::core::ai::models::get_next_best_model(&current_config.model)
+                {
+                    tracing::info!("Switching to fallback model: {}", next_model);
+                    current_config.model = next_model;
+                    continue;
                 } else {
-                    // Explicitly disable thinking by setting budget to 0
-                    Some(ThinkingConfig {
-                        include_thoughts: Some(false),
-                        thinking_budget: Some(0),
-                    })
+                    tracing::error!("No more fallback models available");
+                    // Let the error handling below catch it or return a specific error
                 }
-            })
-        } else {
-            // Model doesn't support thinking, don't send the config
-            None
-        };
-
-        // Build generation config (includes thinking_config for 2.5+ models)
-        let generation_config = GenerationConfig {
-            temperature: Some(config.temperature),
-            max_output_tokens: config.max_tokens,
-            top_p: config.top_p,
-            top_k: None,
-            thinking_config,
-        };
-
-        // Convert tools to Gemini format if provided
-        let tools = config
-            .tools
-            .as_ref()
-            .map(|t| Self::convert_tools(t))
-            .filter(|t| !t.is_empty());
-
-        // Convert tool config if provided
-        let tool_config = config.tool_config.as_ref().map(Self::convert_tool_config);
-
-        // Build the request
-        let request = GenerateContentRequest {
-            contents,
-            system_instruction,
-            generation_config: Some(generation_config),
-            tools,
-            tool_config,
-        };
-
-        // Log request for debugging (be careful not to log the API key!)
-        tracing::debug!(
-            "Gemini request to model {}: {} messages, tools: {:?}",
-            config.model,
-            messages.len(),
-            config.tools.as_ref().map(|t| t.len()).unwrap_or(0)
-        );
-
-        // Send the request
-        let response = self
-            .client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .json(&request)
-            .send()
-            .await?;
-
-        // Check for HTTP errors
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_text = response.text().await?;
-
-            // Try to parse as Gemini error response for better error messages
-            if let Ok(error_response) = serde_json::from_str::<GeminiErrorResponse>(&error_text) {
-                return Err(format!(
-                    "Gemini API error ({}): {}",
-                    status, error_response.error.message
-                )
-                .into());
             }
 
-            return Err(format!("Gemini API error: {} - {}", status, error_text).into());
-        }
+            // Check for HTTP errors
+            if !response.status().is_success() {
+                let status = response.status();
+                let error_text = response.text().await?;
 
-        // Parse the response
-        let response_json: GenerateContentResponse = response.json().await?;
+                // Try to parse as Gemini error response for better error messages
+                if let Ok(error_response) = serde_json::from_str::<GeminiErrorResponse>(&error_text)
+                {
+                    return Err(format!(
+                        "Gemini API error ({}): {}",
+                        status, error_response.error.message
+                    )
+                    .into());
+                }
 
-        // Get the first candidate (usually the only one)
-        let candidate = response_json
-            .candidates
-            .as_ref()
-            .and_then(|c| c.first())
-            .ok_or(
+                return Err(format!("Gemini API error: {} - {}", status, error_text).into());
+            }
+
+            // Parse the response
+            let response_json: GenerateContentResponse = response.json().await?;
+
+            // Get the first candidate (usually the only one)
+            let candidate = response_json
+                .candidates
+                .as_ref()
+                .and_then(|c| c.first())
+                .ok_or(
                 "No content in Gemini response - the model may have been blocked by safety filters",
             )?;
 
-        let parts = &candidate.content.parts;
+            let parts = &candidate.content.parts;
 
-        // Extract function calls if the model wants to call any functions
-        //
-        // When function calling is used, the model may return parts with
-        // `function_call` instead of text. We extract these separately.
-        let function_calls: Vec<FunctionCall> = parts
-            .iter()
-            .filter_map(|p| p.function_call.as_ref())
-            .map(|fc| FunctionCall {
-                name: fc.name.clone(),
-                args: fc.args.clone(),
-            })
-            .collect();
-
-        let function_calls = if function_calls.is_empty() {
-            None
-        } else {
-            Some(function_calls)
-        };
-
-        // Extract grounding metadata if Google Search was used
-        let grounding_metadata = candidate
-            .grounding_metadata
-            .as_ref()
-            .map(Self::convert_grounding_metadata);
-
-        // Extract text parts only (filter out function calls)
-        let text_parts: Vec<&Part> = parts.iter().filter(|p| p.text.is_some()).collect();
-
-        // Extract thinking and content from the response parts.
-        //
-        // When thinking/reasoning is enabled, Gemini returns multiple parts:
-        // - If there are 2+ parts: parts[0..n-1] are thinking, parts[n-1] is the response
-        // - If there's 1 part: it's just the response (no thinking)
-        //
-        // We extract thinking from all but the last part, and content from the last part.
-        let thinking = if text_parts.len() > 1 {
-            let thinking_parts: Vec<&str> = text_parts[..text_parts.len() - 1]
+            // Extract function calls if the model wants to call any functions
+            //
+            // When function calling is used, the model may return parts with
+            // `function_call` instead of text. We extract these separately.
+            let function_calls: Vec<FunctionCall> = parts
                 .iter()
-                .filter_map(|p| p.text.as_deref())
+                .filter_map(|p| p.function_call.as_ref())
+                .map(|fc| FunctionCall {
+                    name: fc.name.clone(),
+                    args: fc.args.clone(),
+                })
                 .collect();
-            if thinking_parts.is_empty() {
+
+            let function_calls = if function_calls.is_empty() {
                 None
             } else {
-                Some(thinking_parts.join("\n\n"))
-            }
-        } else {
-            None
-        };
+                Some(function_calls)
+            };
 
-        // Extract content: the last text part is always the actual response
-        let content = text_parts
-            .last()
-            .and_then(|p| p.text.clone())
-            .unwrap_or_default();
+            // Extract grounding metadata if Google Search was used
+            let grounding_metadata = candidate
+                .grounding_metadata
+                .as_ref()
+                .map(Self::convert_grounding_metadata);
 
-        tracing::debug!(
-            "Gemini response received: {} chars content, {} chars thinking, {} function calls",
-            content.len(),
-            thinking.as_ref().map(|t| t.len()).unwrap_or(0),
-            function_calls.as_ref().map(|f| f.len()).unwrap_or(0)
-        );
+            // Extract text parts only (filter out function calls)
+            let text_parts: Vec<&Part> = parts.iter().filter(|p| p.text.is_some()).collect();
 
-        Ok(AiProviderResponse {
-            content,
-            thinking,
-            grounding_metadata,
-            url_context_metadata: None, // TODO: Parse URL context metadata when available
-            function_calls,
-        })
+            // Extract thinking and content from the response parts.
+            //
+            // When thinking/reasoning is enabled, Gemini returns multiple parts:
+            // - If there are 2+ parts: parts[0..n-1] are thinking, parts[n-1] is the response
+            // - If there's 1 part: it's just the response (no thinking)
+            //
+            // We extract thinking from all but the last part, and content from the last part.
+            let thinking = if text_parts.len() > 1 {
+                let thinking_parts: Vec<&str> = text_parts[..text_parts.len() - 1]
+                    .iter()
+                    .filter_map(|p| p.text.as_deref())
+                    .collect();
+                if thinking_parts.is_empty() {
+                    None
+                } else {
+                    Some(thinking_parts.join("\n\n"))
+                }
+            } else {
+                None
+            };
+
+            // Extract content: the last text part is always the actual response
+            let content = text_parts
+                .last()
+                .and_then(|p| p.text.clone())
+                .unwrap_or_default();
+
+            tracing::debug!(
+                "Gemini response received: {} chars content, {} chars thinking, {} function calls",
+                content.len(),
+                thinking.as_ref().map(|t| t.len()).unwrap_or(0),
+                function_calls.as_ref().map(|f| f.len()).unwrap_or(0)
+            );
+
+            return Ok(AiProviderResponse {
+                content,
+                thinking,
+                grounding_metadata,
+                url_context_metadata: None, // TODO: Parse URL context metadata when available
+                function_calls,
+            });
+        }
     }
 }
 

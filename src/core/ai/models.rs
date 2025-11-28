@@ -349,3 +349,26 @@ pub struct AiResponse {
     pub answer: String,
     pub reasoning: Option<String>,
 }
+
+/// Hierarchy of Gemini models from best to worst.
+/// Used for fallback logic when rate limits are encountered.
+pub const MODEL_HIERARCHY: &[&str] = &[
+    "gemini-3-pro",
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-lite",
+];
+
+/// Gets the next best model in the hierarchy.
+///
+/// Returns `None` if the current model is not in the hierarchy or is the last one.
+pub fn get_next_best_model(current_model: &str) -> Option<String> {
+    let position = MODEL_HIERARCHY.iter().position(|&m| m == current_model)?;
+    if position + 1 < MODEL_HIERARCHY.len() {
+        Some(MODEL_HIERARCHY[position + 1].to_string())
+    } else {
+        None
+    }
+}
