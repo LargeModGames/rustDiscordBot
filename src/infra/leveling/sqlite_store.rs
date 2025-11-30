@@ -184,7 +184,7 @@ impl XpStore for SqliteXpStore {
         limit: usize,
     ) -> Result<Vec<UserStats>, LevelingError> {
         let rows = sqlx::query(
-            "SELECT user_id, guild_id, total_xp, level FROM user_profiles WHERE guild_id = ? ORDER BY total_xp DESC LIMIT ?"
+            "SELECT user_id, guild_id, total_xp, level, prestige_level FROM user_profiles WHERE guild_id = ? ORDER BY prestige_level DESC, total_xp DESC LIMIT ?"
         )
         .bind(guild_id as i64)
         .bind(limit as i64)
@@ -200,6 +200,7 @@ impl XpStore for SqliteXpStore {
                     guild_id: row.get::<i64, _>("guild_id") as u64,
                     xp: row.get::<i64, _>("total_xp") as u64,
                     level: row.get::<i64, _>("level") as u32,
+                    prestige_level: row.get::<i64, _>("prestige_level") as u32,
                     last_xp_gain: None, // Not stored in DB as Instant
                 }
             })

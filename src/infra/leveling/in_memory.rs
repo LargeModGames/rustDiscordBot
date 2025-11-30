@@ -146,13 +146,18 @@ impl XpStore for InMemoryXpStore {
                     guild_id: key.guild_id,
                     xp: data.xp,
                     level: temp_service.calculate_level(data.xp),
+                    prestige_level: data.profile.prestige_level,
                     last_xp_gain: data.last_xp_time,
                 }
             })
             .collect();
 
-        // Sort by XP (highest first)
-        users.sort_by(|a, b| b.xp.cmp(&a.xp));
+        // Sort by Prestige (highest first), then XP (highest first)
+        users.sort_by(|a, b| {
+            b.prestige_level
+                .cmp(&a.prestige_level)
+                .then(b.xp.cmp(&a.xp))
+        });
 
         // Take only the requested number
         users.truncate(limit);

@@ -33,6 +33,7 @@ pub struct UserStats {
     pub guild_id: u64,
     pub xp: u64,
     pub level: u32,
+    pub prestige_level: u32,
     /// When did this user last gain XP? Used for cooldown prevention.
     pub last_xp_gain: Option<Instant>,
 }
@@ -1044,15 +1045,15 @@ impl<S: XpStore> LevelingService<S> {
     ) -> Result<UserStats, LevelingError> {
         Self::validate_ids(user_id, guild_id)?;
 
-        let xp = self.store.get_xp(user_id, guild_id).await?;
-        let level = self.calculate_level(xp);
+        let profile = self.get_user_profile(user_id, guild_id).await?;
         let last_xp_gain = self.store.get_last_xp_time(user_id, guild_id).await?;
 
         Ok(UserStats {
             user_id,
             guild_id,
-            xp,
-            level,
+            xp: profile.total_xp,
+            level: profile.level,
+            prestige_level: profile.prestige_level,
             last_xp_gain,
         })
     }

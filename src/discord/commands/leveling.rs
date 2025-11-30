@@ -322,6 +322,16 @@ pub async fn leaderboard(
                 _ => "  ",
             };
 
+            // Get prestige info
+            let tier_info = crate::core::leveling::LevelingService::<
+                crate::infra::leveling::SqliteXpStore,
+            >::get_prestige_tier_info(stats.prestige_level);
+            let prestige_badge = if stats.prestige_level > 0 {
+                format!("{} ", tier_info.badge_emoji)
+            } else {
+                "".to_string()
+            };
+
             // Highlight the user if it's them
             let is_me = stats.user_id == ctx.author().id.get();
             let name_display = if is_me {
@@ -346,8 +356,8 @@ pub async fn leaderboard(
             let bar = build_progress_bar(progress_pct, 10);
 
             description.push_str(&format!(
-                "{} **#{}** {}\nLevel {} | {} XP\n{}\n\n",
-                medal, rank, name_display, stats.level, stats.xp, bar
+                "{} **#{}** {}{}\nLevel {} | {} XP\n{}\n\n",
+                medal, rank, prestige_badge, name_display, stats.level, stats.xp, bar
             ));
         }
 
@@ -463,6 +473,16 @@ pub async fn leaderboard(
                 _ => "  ",
             };
 
+            // Get prestige info
+            let tier_info = crate::core::leveling::LevelingService::<
+                crate::infra::leveling::SqliteXpStore,
+            >::get_prestige_tier_info(stats.prestige_level);
+            let prestige_badge = if stats.prestige_level > 0 {
+                format!("{} ", tier_info.badge_emoji)
+            } else {
+                "".to_string()
+            };
+
             let is_me = stats.user_id == ctx.author().id.get();
             let name_display = if is_me {
                 format!("**{}** (You)", user_name)
@@ -485,8 +505,8 @@ pub async fn leaderboard(
             let bar = build_progress_bar(progress_pct, 10);
 
             description.push_str(&format!(
-                "{} **#{}** {}\nLevel {} | {} XP\n{}\n\n",
-                medal, rank, name_display, stats.level, stats.xp, bar
+                "{} **#{}** {}{}\nLevel {} | {} XP\n{}\n\n",
+                medal, rank, prestige_badge, name_display, stats.level, stats.xp, bar
             ));
         }
 
