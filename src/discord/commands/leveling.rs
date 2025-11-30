@@ -942,14 +942,14 @@ pub async fn prestige(ctx: Context<'_>) -> Result<(), Error> {
                 serenity::CreateEmbed::new()
                     .title("🌟 Prestige System")
                     .description(format!(
-                        "You need to reach **level 50** to prestige!\\n\\n\
-                    **Current level:** {}\\n\
-                    **Current prestige:** {}\\n\\n\
-                    **Why prestige?**\\n\
-                    Prestiging resets you to level 1, but grants permanent bonuses:\\n\\n\
-                    **Next tier ({} {}):**\\n\
-                    • {:.0}% XP multiplier\\n\
-                    • +{} daily XP bonus{}\\n\
+                        "You need to reach **level 50** to prestige!\n\n\
+                    **Current level:** {}\n\
+                    **Current prestige:** {}\n\n\
+                    **Why prestige?**\n\
+                    Prestiging resets you to level 1, but grants permanent bonuses:\n\n\
+                    **Next tier ({} {}):**\n\
+                    • {:.0}% XP multiplier\n\
+                    • +{} daily XP bonus{}\n\
                     • +{} coins per message",
                         profile.level,
                         if profile.prestige_level > 0 {
@@ -990,19 +990,19 @@ pub async fn prestige(ctx: Context<'_>) -> Result<(), Error> {
                     serenity::CreateEmbed::new()
                         .title("⚠️ Confirm Prestige")
                         .description(format!(
-                            "Are you sure you want to prestige?\\n\\n\
-                        **You will lose:**\\n\
-                        • Your level ({} → 1)\\n\
-                        • All your XP ({} → 0)\\n\\n\
-                        **You will gain:**\\n\
-                        • Prestige level {} → {}\\n\
-                        • {} ({} tier)\\n\
-                        • {:.0}% XP multiplier ({:.2}x)\\n\
-                        • +{} daily XP bonus{}\\n\
-                        • +{} coins per message\\n\\n\
-                        **You will keep:**\\n\
-                        • All achievements\\n\
-                        • Daily streak\\n\
+                            "Are you sure you want to prestige?\n\n\
+                        **You will lose:**\n\
+                        • Your level ({} → 1)\n\
+                        • All your XP ({} → 0)\n\n\
+                        **You will gain:**\n\
+                        • Prestige level {} → {}\n\
+                        • {} ({} tier)\n\
+                        • {:.0}% XP multiplier ({:.2}x)\n\
+                        • +{} daily XP bonus{}\n\
+                        • +{} coins per message\n\n\
+                        **You will keep:**\n\
+                        • All achievements\n\
+                        • Daily streak\n\
                         • All statistics",
                             profile.level,
                             profile.total_xp,
@@ -1066,12 +1066,12 @@ pub async fn prestige(ctx: Context<'_>) -> Result<(), Error> {
                                 serenity::CreateEmbed::new()
                                     .title("🌟 Prestige Complete!")
                                     .description(format!(
-                                        "Congratulations! You've achieved prestige level **{}**!\\n\\n\
-                                        {} **{} Tier**\\n\\n\
-                                        **Your new bonuses:**\\n\
-                                        • {:.0}% XP multiplier ({:.2}x)\\n\
-                                        • +{} daily XP bonus{}\\n\
-                                        • +{} coins per message\\n\\n\
+                                        "Congratulations! You've achieved prestige level **{}**!\n\n\
+                                        {} **{} Tier**\n\n\
+                                        **Your new bonuses:**\n\
+                                        • {:.0}% XP multiplier ({:.2}x)\n\
+                                        • +{} daily XP bonus{}\n\
+                                        • +{} coins per message\n\n\
                                         Your journey begins anew at level 1. Good luck!",
                                         prestige_event.new_prestige_level,
                                         new_tier.badge_emoji,
