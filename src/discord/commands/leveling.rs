@@ -326,11 +326,6 @@ pub async fn leaderboard(
             let tier_info = crate::core::leveling::LevelingService::<
                 crate::infra::leveling::SqliteXpStore,
             >::get_prestige_tier_info(stats.prestige_level);
-            let prestige_badge = if stats.prestige_level > 0 {
-                format!("{} ", tier_info.badge_emoji)
-            } else {
-                "".to_string()
-            };
 
             // Highlight the user if it's them
             let is_me = stats.user_id == ctx.author().id.get();
@@ -355,9 +350,18 @@ pub async fn leaderboard(
 
             let bar = build_progress_bar(progress_pct, 10);
 
+            let level_line = if stats.prestige_level > 0 {
+                format!(
+                    "Prestige {} {} | Level {} | {} XP",
+                    stats.prestige_level, tier_info.badge_emoji, stats.level, stats.xp
+                )
+            } else {
+                format!("Level {} | {} XP", stats.level, stats.xp)
+            };
+
             description.push_str(&format!(
-                "{} **#{}** {}{}\nLevel {} | {} XP\n{}\n\n",
-                medal, rank, prestige_badge, name_display, stats.level, stats.xp, bar
+                "{} **#{}** {}\n{}\n{}\n\n",
+                medal, rank, name_display, level_line, bar
             ));
         }
 
@@ -477,11 +481,6 @@ pub async fn leaderboard(
             let tier_info = crate::core::leveling::LevelingService::<
                 crate::infra::leveling::SqliteXpStore,
             >::get_prestige_tier_info(stats.prestige_level);
-            let prestige_badge = if stats.prestige_level > 0 {
-                format!("{} ", tier_info.badge_emoji)
-            } else {
-                "".to_string()
-            };
 
             let is_me = stats.user_id == ctx.author().id.get();
             let name_display = if is_me {
@@ -504,9 +503,18 @@ pub async fn leaderboard(
 
             let bar = build_progress_bar(progress_pct, 10);
 
+            let level_line = if stats.prestige_level > 0 {
+                format!(
+                    "Prestige {} {} | Level {} | {} XP",
+                    stats.prestige_level, tier_info.badge_emoji, stats.level, stats.xp
+                )
+            } else {
+                format!("Level {} | {} XP", stats.level, stats.xp)
+            };
+
             description.push_str(&format!(
-                "{} **#{}** {}{}\nLevel {} | {} XP\n{}\n\n",
-                medal, rank, prestige_badge, name_display, stats.level, stats.xp, bar
+                "{} **#{}** {}\n{}\n{}\n\n",
+                medal, rank, name_display, level_line, bar
             ));
         }
 
