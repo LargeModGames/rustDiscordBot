@@ -75,6 +75,39 @@ impl SqliteXpStore {
         .execute(&self.pool)
         .await?;
 
+        // Migration: Add prestige_level column if it doesn't exist (for existing databases)
+        // SQLite doesn't support IF NOT EXISTS for ALTER TABLE, so we need to check if the column exists
+        let column_check = sqlx::query("PRAGMA table_info(user_profiles)")
+            .fetch_all(&self.pool)
+            .await?;
+
+        let has_prestige_level = column_check.iter().any(|row| {
+            let name: String = row.get("name");
+            name == "prestige_level"
+        });
+
+        if !has_prestige_level {
+            sqlx::query(
+                "ALTER TABLE user_profiles ADD COLUMN prestige_level INTEGER NOT NULL DEFAULT 0",
+            )
+            .execute(&self.pool)
+            .await?;
+        }
+
+        // Migration: Add xp_history column if it doesn't exist (for existing databases)
+        let has_xp_history = column_check.iter().any(|row| {
+            let name: String = row.get("name");
+            name == "xp_history"
+        });
+
+        if !has_xp_history {
+            sqlx::query(
+                "ALTER TABLE user_profiles ADD COLUMN xp_history TEXT NOT NULL DEFAULT '[]'",
+            )
+            .execute(&self.pool)
+            .await?;
+        }
+
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS daily_goals (
