@@ -789,7 +789,8 @@ impl<S: XpStore> LevelingService<S> {
             return 1;
         }
 
-        let approx = ((xp as f64 / 100.0).powf(2.0 / 3.0)).floor() as u32 + 1;
+        // Inverse of the new formula: 60 * (level-1)^1.35
+        let approx = ((xp as f64 / 60.0).powf(1.0 / 1.35)).floor() as u32 + 1;
         let mut level = approx.max(1);
 
         // Adjust upward if we undershot.
@@ -821,7 +822,10 @@ impl<S: XpStore> LevelingService<S> {
         }
 
         let power = (level - 1) as f64;
-        (100.0 * power.powf(1.5)) as u64
+        // Aggressive rebalancing: 60 * (level-1)^1.35
+        // This reduces XP requirements by ~70% making level 100
+        // achievable in ~3 months instead of 10 months for active users
+        (60.0 * power.powf(1.35)) as u64
     }
 
     /// Get a user's current stats.
