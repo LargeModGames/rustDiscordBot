@@ -41,6 +41,10 @@ This bot follows **Clean Architecture** (Hexagonal Architecture) with three dist
   - `/leaderboard` - View server leaderboard
   - `/achievements` - View earned achievements
   - `/daily` - Claim daily XP rewards
+  - `/prestige` - Reset your level for permanent bonuses (unlocked at level 50)
+    - Multi-tier system with XP multipliers (1.05x-1.50x)
+    - Daily XP bonuses (+50 to +400 XP)
+    - Currency bonuses (+5 to +50 coins per message)
 - ✅ **GitHub Integration** - Track repository updates
   - `/github` - Manage subscriptions to repositories
   - Background polling for commits and issues

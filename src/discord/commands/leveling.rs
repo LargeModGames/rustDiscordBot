@@ -77,13 +77,25 @@ async fn show_profile(ctx: Context<'_>, user: Option<serenity::User>) -> Result<
         0.0
     };
 
+    // Get prestige tier info
+    let tier_info = crate::core::leveling::LevelingService::<crate::infra::leveling::SqliteXpStore>::get_prestige_tier_info(profile.prestige_level);
+    let prestige_display = if profile.prestige_level > 0 {
+        format!(
+            "{} {} (Prestige {})",
+            tier_info.badge_emoji, tier_info.tier_name, profile.prestige_level
+        )
+    } else {
+        "None".to_string()
+    };
+
     let embed = serenity::CreateEmbed::new()
         .title(format!("Profile of {}", target_user.name))
         .color(0x00ff00)
         .thumbnail(target_user.face())
+        .field("Prestige", prestige_display, true)
         .field("Level", format!("**{}**", profile.level), true)
-        .field("Total XP", format!("**{}**", profile.total_xp), true)
         .field("GreyCoins", format!("🪙 {}", wallet.balance), true)
+        .field("Total XP", format!("**{}**", profile.total_xp), false)
         .field(
             "Progress",
             format!(
@@ -899,6 +911,207 @@ pub async fn achievements(
     )));
 
     ctx.send(poise::CreateReply::default().embed(embed)).await?;
+
+    Ok(())
+}
+
+/// Prestige - reset your level for permanent bonuses! (Requires level 50)
+#[poise::command(slash_command, guild_only, category = "Leveling")]
+pub async fn prestige(ctx: Context<'_>) -> Result<(), Error> {
+    let user_id = ctx.author().id.get();
+    let guild_id = ctx
+        .guild_id()
+        .ok_or("This command only works in servers")?
+        .get();
+
+    // Get current profile to show eligibility
+    let profile = ctx
+        .data()
+        .leveling
+        .get_user_profile(user_id, guild_id)
+        .await?;
+
+    // Check if eligible
+    if profile.level < 50 {
+        let tier_info = crate::core::leveling::LevelingService::<
+            crate::infra::leveling::SqliteXpStore,
+        >::get_prestige_tier_info(profile.prestige_level + 1);
+
+        ctx.send(
+            poise::CreateReply::default().embed(
+                serenity::CreateEmbed::new()
+                    .title("🌟 Prestige System")
+                    .description(format!(
+                        "You need to reach **level 50** to prestige!\\n\\n\
+                    **Current level:** {}\\n\
+                    **Current prestige:** {}\\n\\n\
+                    **Why prestige?**\\n\
+                    Prestiging resets you to level 1, but grants permanent bonuses:\\n\\n\
+                    **Next tier ({} {}):**\\n\
+                    • {:.0}% XP multiplier\\n\
+                    • +{} daily XP bonus{}\\n\
+                    • +{} coins per message",
+                        profile.level,
+                        if profile.prestige_level > 0 {
+                            let current_tier = crate::core::leveling::LevelingService::<
+                                crate::infra::leveling::SqliteXpStore,
+                            >::get_prestige_tier_info(
+                                profile.prestige_level
+                            );
+                            format!("{} {}", current_tier.badge_emoji, current_tier.tier_name)
+                        } else {
+                            "None".to_string()
+                        },
+                        tier_info.badge_emoji,
+                        tier_info.tier_name,
+                        tier_info.xp_multiplier * 100.0,
+                        tier_info.daily_xp_bonus,
+                        if tier_info.daily_xp_bonus > 0 {
+                            " (first message of the day)"
+                        } else {
+                            ""
+                        },
+                        tier_info.coin_bonus_per_message
+                    ))
+                    .color(0x9b59b6), // Purple
+            ),
+        )
+        .await?;
+        return Ok(());
+    }
+
+    // Show confirmation
+    let next_tier = crate::core::leveling::LevelingService::<crate::infra::leveling::SqliteXpStore>::get_prestige_tier_info(profile.prestige_level + 1);
+
+    let confirm_msg = ctx
+        .send(
+            poise::CreateReply::default()
+                .embed(
+                    serenity::CreateEmbed::new()
+                        .title("⚠️ Confirm Prestige")
+                        .description(format!(
+                            "Are you sure you want to prestige?\\n\\n\
+                        **You will lose:**\\n\
+                        • Your level ({} → 1)\\n\
+                        • All your XP ({} → 0)\\n\\n\
+                        **You will gain:**\\n\
+                        • Prestige level {} → {}\\n\
+                        • {} ({} tier)\\n\
+                        • {:.0}% XP multiplier ({:.2}x)\\n\
+                        • +{} daily XP bonus{}\\n\
+                        • +{} coins per message\\n\\n\
+                        **You will keep:**\\n\
+                        • All achievements\\n\
+                        • Daily streak\\n\
+                        • All statistics",
+                            profile.level,
+                            profile.total_xp,
+                            profile.prestige_level,
+                            profile.prestige_level + 1,
+                            next_tier.badge_emoji,
+                            next_tier.tier_name,
+                            (next_tier.xp_multiplier - 1.0) * 100.0,
+                            next_tier.xp_multiplier,
+                            next_tier.daily_xp_bonus,
+                            if next_tier.daily_xp_bonus > 0 {
+                                " (first message of day)"
+                            } else {
+                                ""
+                            },
+                            next_tier.coin_bonus_per_message
+                        ))
+                        .color(0xe74c3c), // Red
+                )
+                .components(vec![serenity::CreateActionRow::Buttons(vec![
+                    serenity::CreateButton::new("confirm_prestige")
+                        .label("✅ Yes, Prestige!")
+                        .style(serenity::ButtonStyle::Danger),
+                    serenity::CreateButton::new("cancel_prestige")
+                        .label("❌ Cancel")
+                        .style(serenity::ButtonStyle::Secondary),
+                ])]),
+        )
+        .await?;
+
+    let msg_id = confirm_msg.message().await?.id;
+
+    // Wait for button interaction
+    if let Some(mci) = serenity::ComponentInteractionCollector::new(ctx)
+        .author_id(ctx.author().id)
+        .channel_id(ctx.channel_id())
+        .timeout(std::time::Duration::from_secs(60))
+        .filter(move |mci| mci.message.id == msg_id)
+        .await
+    {
+        match mci.data.custom_id.as_str() {
+            "confirm_prestige" => {
+                // Acknowledge interaction
+                mci.defer(&ctx.http()).await?;
+
+                // Perform prestige
+                let prestige_event = ctx.data().leveling.prestige_user(user_id, guild_id).await?;
+
+                let new_tier = crate::core::leveling::LevelingService::<
+                    crate::infra::leveling::SqliteXpStore,
+                >::get_prestige_tier_info(
+                    prestige_event.new_prestige_level
+                );
+
+                // Update message with success
+                confirm_msg
+                    .edit(
+                        ctx,
+                        poise::CreateReply::default()
+                            .embed(
+                                serenity::CreateEmbed::new()
+                                    .title("🌟 Prestige Complete!")
+                                    .description(format!(
+                                        "Congratulations! You've achieved prestige level **{}**!\\n\\n\
+                                        {} **{} Tier**\\n\\n\
+                                        **Your new bonuses:**\\n\
+                                        • {:.0}% XP multiplier ({:.2}x)\\n\
+                                        • +{} daily XP bonus{}\\n\
+                                        • +{} coins per message\\n\\n\
+                                        Your journey begins anew at level 1. Good luck!",
+                                        prestige_event.new_prestige_level,
+                                        new_tier.badge_emoji,
+                                        new_tier.tier_name,
+                                        (new_tier.xp_multiplier - 1.0) * 100.0,
+                                        new_tier.xp_multiplier,
+                                        new_tier.daily_xp_bonus,
+                                        if new_tier.daily_xp_bonus > 0 { " (first message each day)" } else { "" },
+                                        new_tier.coin_bonus_per_message
+                                    ))
+                                    .color(0x2ecc71) // Green
+                            )
+                            .components(vec![]),
+                    )
+                    .await?;
+            }
+            "cancel_prestige" => {
+                mci.defer(&ctx.http()).await?;
+                confirm_msg
+                    .edit(
+                        ctx,
+                        poise::CreateReply::default()
+                            .content("Prestige cancelled.")
+                            .components(vec![]),
+                    )
+                    .await?;
+            }
+            _ => {}
+        }
+    } else {
+        // Timeout
+        let _ = confirm_msg
+            .edit(
+                ctx,
+                poise::CreateReply::default()
+                    .content("Prestige confirmation timed out.")
+                    .components(vec![]),
+            )
+            .await;
+    }
 
     Ok(())
 }

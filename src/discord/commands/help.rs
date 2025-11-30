@@ -89,6 +89,12 @@ fn get_command_metadata(name: &str) -> CommandMetadata {
             description: Some("Show the closest achievement you can earn."),
             note: Some("Aliases: /nextach"),
         },
+        "prestige" => CommandMetadata {
+            category: "Progress & Rewards",
+            priority: 45,
+            description: Some("Reset your level for permanent bonuses (requires level 50)."),
+            note: Some("Gain XP multipliers, daily bonuses, and coin bonuses."),
+        },
         "github" => CommandMetadata {
             category: "GitHub Automation",
             priority: 60,

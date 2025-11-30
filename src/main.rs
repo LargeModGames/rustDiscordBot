@@ -702,6 +702,7 @@ async fn main() {
                 discord::commands::leveling::leaderboard(),
                 discord::commands::leveling::give_xp(),
                 discord::commands::leveling::achievements(),
+                discord::commands::leveling::prestige(),
                 discord::commands::economy::balance(),
                 discord::commands::economy::daily(),
                 discord::commands::shop::shop(),

@@ -49,6 +49,26 @@ pub struct LevelUpEvent {
     pub total_xp: u64,
 }
 
+#[allow(dead_code)]
+/// Represents when a user prestiges.
+/// This is returned by the service so the Discord layer can announce it.
+#[derive(Debug, Clone)]
+pub struct PrestigeEvent {
+    pub user_id: u64,
+    pub guild_id: u64,
+    pub new_prestige_level: u32,
+}
+
+/// Information about a prestige tier.
+#[derive(Debug, Clone)]
+pub struct PrestigeTierInfo {
+    pub tier_name: String,
+    pub badge_emoji: String,
+    pub xp_multiplier: f64,
+    pub daily_xp_bonus: u64,
+    pub coin_bonus_per_message: u64,
+}
+
 // Rich user profile that mirrors the python 'user_data' dictionary.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserProfile {
@@ -82,6 +102,8 @@ pub struct UserProfile {
     pub boost_days: u64,
     #[serde(default)]
     pub first_boost_date: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub prestige_level: u32,
     #[serde(default)]
     pub xp_history: VecDeque<XpEvent>,
 }
@@ -139,6 +161,7 @@ impl UserProfile {
             goals_completed: 0,
             boost_days: 0,
             first_boost_date: None,
+            prestige_level: 0,
             xp_history: VecDeque::new(),
         }
     }
@@ -358,6 +381,97 @@ impl<S: XpStore> LevelingService<S> {
         }
     }
 
+    /// Get prestige tier information for a given prestige level.
+    ///
+    /// This encapsulates all tier logic in one place, making it easy to adjust bonuses.
+    pub fn get_prestige_tier_info(prestige_level: u32) -> PrestigeTierInfo {
+        match prestige_level {
+            0 => PrestigeTierInfo {
+                tier_name: "Novice".to_string(),
+                badge_emoji: "-".to_string(),
+                xp_multiplier: 1.00,
+                daily_xp_bonus: 0,
+                coin_bonus_per_message: 0,
+            },
+            1 => PrestigeTierInfo {
+                tier_name: "Bronze".to_string(),
+                badge_emoji: "🥉".to_string(),
+                xp_multiplier: 1.05,
+                daily_xp_bonus: 0,
+                coin_bonus_per_message: 5,
+            },
+            2 => PrestigeTierInfo {
+                tier_name: "Silver".to_string(),
+                badge_emoji: "🥈".to_string(),
+                xp_multiplier: 1.10,
+                daily_xp_bonus: 0,
+                coin_bonus_per_message: 10,
+            },
+            3 => PrestigeTierInfo {
+                tier_name: "Gold".to_string(),
+                badge_emoji: "🥇".to_string(),
+                xp_multiplier: 1.15,
+                daily_xp_bonus: 50,
+                coin_bonus_per_message: 15,
+            },
+            4 => PrestigeTierInfo {
+                tier_name: "Platinum".to_string(),
+                badge_emoji: "💎".to_string(),
+                xp_multiplier: 1.20,
+                daily_xp_bonus: 100,
+                coin_bonus_per_message: 20,
+            },
+            5 => PrestigeTierInfo {
+                tier_name: "Diamond".to_string(),
+                badge_emoji: "💠".to_string(),
+                xp_multiplier: 1.25,
+                daily_xp_bonus: 150,
+                coin_bonus_per_message: 25,
+            },
+            6 => PrestigeTierInfo {
+                tier_name: "Master".to_string(),
+                badge_emoji: "⭐".to_string(),
+                xp_multiplier: 1.30,
+                daily_xp_bonus: 200,
+                coin_bonus_per_message: 30,
+            },
+            7 => PrestigeTierInfo {
+                tier_name: "Grandmaster".to_string(),
+                badge_emoji: "🌟".to_string(),
+                xp_multiplier: 1.35,
+                daily_xp_bonus: 250,
+                coin_bonus_per_message: 35,
+            },
+            8 => PrestigeTierInfo {
+                tier_name: "Legend".to_string(),
+                badge_emoji: "✨".to_string(),
+                xp_multiplier: 1.40,
+                daily_xp_bonus: 300,
+                coin_bonus_per_message: 40,
+            },
+            9 => PrestigeTierInfo {
+                tier_name: "Mythic".to_string(),
+                badge_emoji: "🔥".to_string(),
+                xp_multiplier: 1.45,
+                daily_xp_bonus: 350,
+                coin_bonus_per_message: 45,
+            },
+            _ => PrestigeTierInfo {
+                tier_name: "Transcendent".to_string(),
+                badge_emoji: "👑".to_string(),
+                xp_multiplier: 1.50,
+                daily_xp_bonus: 400,
+                coin_bonus_per_message: 50,
+            },
+        }
+    }
+
+    /// Get the coin bonus per message for a given prestige level.
+    /// This is called by the economy system.
+    pub fn get_prestige_coin_bonus(prestige_level: u32) -> u64 {
+        Self::get_prestige_tier_info(prestige_level).coin_bonus_per_message
+    }
+
     /// Process a message and potentially award XP.
     ///
     /// **Returns:**
@@ -414,12 +528,58 @@ impl<S: XpStore> LevelingService<S> {
 
         let old_level = profile.level;
 
-        // Award XP
+        // Get prestige bonuses
+        let tier_info = Self::get_prestige_tier_info(profile.prestige_level);
+
+        // Award XP with prestige multiplier
         let base_gain = self.roll_message_xp();
-        let xp_gain = self.apply_xp_boost(base_gain, boosted);
-        profile.total_xp = profile.total_xp.saturating_add(xp_gain);
-        profile.last_message_timestamp = Some(Utc::now());
-        self.record_xp_event(&mut profile, xp_gain, "message".to_string(), None);
+        let boosted_gain = self.apply_xp_boost(base_gain, boosted);
+        let prestige_multiplied = (boosted_gain as f64 * tier_info.xp_multiplier).round() as u64;
+
+        // Check if we should apply daily bonus (Gold tier and above, once per day)
+        let now = Utc::now();
+        let should_apply_daily_bonus = tier_info.daily_xp_bonus > 0
+            && profile
+                .last_message_timestamp
+                .map_or(true, |last_ts| now.date_naive() != last_ts.date_naive());
+
+        let daily_bonus = if should_apply_daily_bonus {
+            tier_info.daily_xp_bonus
+        } else {
+            0
+        };
+
+        let total_xp_gain = prestige_multiplied + daily_bonus;
+        profile.total_xp = profile.total_xp.saturating_add(total_xp_gain);
+        profile.last_message_timestamp = Some(now);
+
+        // Record XP events
+        if daily_bonus > 0 {
+            self.record_xp_event(
+                &mut profile,
+                prestige_multiplied,
+                "message".to_string(),
+                Some(format!("{}x prestige multiplier", tier_info.xp_multiplier)),
+            );
+            self.record_xp_event(
+                &mut profile,
+                daily_bonus,
+                "daily_prestige_bonus".to_string(),
+                Some(format!("{} tier daily bonus", tier_info.tier_name)),
+            );
+        } else {
+            let has_prestige = profile.prestige_level > 0;
+            self.record_xp_event(
+                &mut profile,
+                prestige_multiplied,
+                "message".to_string(),
+                if has_prestige {
+                    Some(format!("{}x prestige multiplier", tier_info.xp_multiplier))
+                } else {
+                    None
+                },
+            );
+        }
 
         // Check achievements first (they may award bonus XP)
         let _newly_earned = self.check_and_award_achievements_internal(&mut profile);
@@ -639,6 +799,7 @@ impl<S: XpStore> LevelingService<S> {
             goals_completed: 0,
             boost_days: 0,
             first_boost_date: None,
+            prestige_level: 0,
             xp_history: VecDeque::new(),
         }
     }
@@ -776,6 +937,53 @@ impl<S: XpStore> LevelingService<S> {
         }
         profile.xp_to_next_level = Self::xp_threshold_for_level(profile.level + 1);
         leveled
+    }
+
+    /// Prestige a user - reset their level and XP while incrementing prestige level.
+    ///
+    /// **Requirements:**
+    /// - User must be at least level 50
+    ///
+    /// **Returns:**
+    /// - `Ok(PrestigeEvent)` with the new prestige level on success
+    /// - `Err(LevelingError)` if user doesn't meet requirements or storage fails
+    pub async fn prestige_user(
+        &self,
+        user_id: u64,
+        guild_id: u64,
+    ) -> Result<PrestigeEvent, LevelingError> {
+        Self::validate_ids(user_id, guild_id)?;
+
+        // Load profile
+        let mut profile = self
+            .store
+            .get_user_profile(user_id, guild_id)
+            .await?
+            .ok_or_else(|| LevelingError::StorageError("User profile not found".to_string()))?;
+
+        // Check if user meets prestige requirements
+        const PRESTIGE_LEVEL_REQUIREMENT: u32 = 50;
+        if profile.level < PRESTIGE_LEVEL_REQUIREMENT {
+            return Err(LevelingError::StorageError(format!(
+                "Must be at least level {} to prestige (current level: {})",
+                PRESTIGE_LEVEL_REQUIREMENT, profile.level
+            )));
+        }
+
+        // Perform prestige
+        profile.prestige_level += 1;
+        profile.level = 1;
+        profile.total_xp = 0;
+        profile.xp_to_next_level = Self::xp_threshold_for_level(2);
+
+        // Save updated profile
+        self.store.save_user_profile(profile.clone()).await?;
+
+        Ok(PrestigeEvent {
+            user_id,
+            guild_id,
+            new_prestige_level: profile.prestige_level,
+        })
     }
 
     /// Calculate level from total XP using the legacy Python curve (100 * (level-1)^1.5).

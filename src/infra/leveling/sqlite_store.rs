@@ -66,6 +66,7 @@ impl SqliteXpStore {
                 goals_completed INTEGER NOT NULL DEFAULT 0,
                 boost_days INTEGER NOT NULL DEFAULT 0,
                 first_boost_date TEXT,
+                prestige_level INTEGER NOT NULL DEFAULT 0,
                 xp_history TEXT NOT NULL DEFAULT '[]',
                 PRIMARY KEY (user_id, guild_id)
             );
@@ -240,8 +241,8 @@ impl XpStore for SqliteXpStore {
                 total_commands_used, total_messages, last_daily, daily_streak,
                 last_message_timestamp, achievements, best_rank, previous_rank,
                 rank_improvement, images_shared, long_messages, links_shared,
-                goals_completed, boost_days, first_boost_date, xp_history
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                goals_completed, boost_days, first_boost_date, prestige_level, xp_history
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id, guild_id) DO UPDATE SET
                 level = excluded.level,
                 total_xp = excluded.total_xp,
@@ -261,6 +262,7 @@ impl XpStore for SqliteXpStore {
                 goals_completed = excluded.goals_completed,
                 boost_days = excluded.boost_days,
                 first_boost_date = excluded.first_boost_date,
+                prestige_level = excluded.prestige_level,
                 xp_history = excluded.xp_history
             "#,
         )
@@ -284,6 +286,7 @@ impl XpStore for SqliteXpStore {
         .bind(profile.goals_completed as i64)
         .bind(profile.boost_days as i64)
         .bind(profile.first_boost_date)
+        .bind(profile.prestige_level as i64)
         .bind(xp_history_json)
         .execute(&self.pool)
         .await
@@ -389,6 +392,7 @@ fn row_to_profile(row: &sqlx::sqlite::SqliteRow) -> Result<UserProfile, Leveling
         goals_completed: row.get::<i64, _>("goals_completed") as u64,
         boost_days: row.get::<i64, _>("boost_days") as u64,
         first_boost_date: row.get("first_boost_date"),
+        prestige_level: row.get::<i64, _>("prestige_level") as u32,
         xp_history: serde_json::from_str(&xp_history_json).unwrap_or_default(),
     })
 }

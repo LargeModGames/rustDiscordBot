@@ -104,6 +104,7 @@ impl XpStore for InMemoryXpStore {
                     goals_completed: 0,
                     boost_days: 0,
                     first_boost_date: None,
+                    prestige_level: 0,
                     xp_history: VecDeque::new(),
                 };
                 StoredUserData {
@@ -195,6 +196,7 @@ impl XpStore for InMemoryXpStore {
                     goals_completed: 0,
                     boost_days: 0,
                     first_boost_date: None,
+                    prestige_level: 0,
                     xp_history: VecDeque::new(),
                 };
                 StoredUserData {
@@ -239,10 +241,7 @@ impl XpStore for InMemoryXpStore {
         guild_id: u64,
     ) -> Result<Option<UserProfile>, LevelingError> {
         let key = UserGuildKey { user_id, guild_id };
-        Ok(self
-            .data
-            .get(&key)
-            .map(|entry| entry.profile.clone()))
+        Ok(self.data.get(&key).map(|entry| entry.profile.clone()))
     }
 
     async fn save_user_profile(&self, profile: UserProfile) -> Result<(), LevelingError> {
