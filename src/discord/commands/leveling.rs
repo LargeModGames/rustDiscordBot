@@ -744,6 +744,9 @@ pub struct Data {
     pub economy: Arc<crate::core::economy::EconomyService<crate::infra::economy::SqliteCoinStore>>,
     pub inventory:
         Arc<crate::core::economy::InventoryService<crate::infra::economy::SqliteInventoryStore>>,
+    /// Anti-spam moderation service
+    pub anti_spam:
+        Arc<crate::core::moderation::AntiSpamService<crate::infra::moderation::SqliteSpamStore>>,
 }
 
 #[derive(Debug, Clone, Copy, poise::ChoiceParameter)]

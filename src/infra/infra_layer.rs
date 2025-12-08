@@ -21,3 +21,6 @@ pub mod economy;
 
 #[path = "google_docs/mod.rs"]
 pub mod google_docs;
+
+#[path = "moderation/mod.rs"]
+pub mod moderation;

@@ -21,3 +21,6 @@ pub mod ai;
 
 #[path = "economy/mod.rs"]
 pub mod economy;
+
+#[path = "moderation/mod.rs"]
+pub mod moderation;

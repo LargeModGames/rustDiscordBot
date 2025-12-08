@@ -62,6 +62,21 @@ async fn event_handler(
                 return Ok(());
             }
 
+            // Anti-spam check (before any other processing)
+            // If detected as spam, the handler will delete/warn/timeout as needed
+            if let Ok(is_spam) = discord::moderation::spam_handler::handle_message_for_spam(
+                ctx,
+                new_message,
+                data.anti_spam.as_ref(),
+            )
+            .await
+            {
+                if is_spam {
+                    // Message was spam - don't process further (no XP, no AI, etc.)
+                    return Ok(());
+                }
+            }
+
             // Check for bot mention for AI response
             let bot_id = ctx.cache.current_user().id;
             if new_message.mentions.iter().any(|u| u.id == bot_id) {
@@ -669,6 +684,29 @@ async fn main() {
     let inventory_store = crate::infra::economy::SqliteInventoryStore::new(inventory_pool);
     let inventory_service = Arc::new(crate::core::economy::InventoryService::new(inventory_store));
 
+    // Anti-Spam Moderation Service
+    let moderation_db_path = format!("{}/moderation.db", data_dir);
+    let moderation_conn_str = format!("sqlite://{}", moderation_db_path);
+    let moderation_options = sqlx::sqlite::SqliteConnectOptions::from_str(&moderation_conn_str)
+        .expect("Invalid moderation DB connection string")
+        .create_if_missing(true)
+        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+        .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+        .busy_timeout(std::time::Duration::from_secs(5));
+
+    let moderation_pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(5)
+        .connect_with(moderation_options)
+        .await
+        .expect("Failed to connect to moderation DB");
+
+    let spam_store = crate::infra::moderation::SqliteSpamStore::new(moderation_pool);
+    spam_store
+        .migrate()
+        .await
+        .expect("Failed to migrate moderation DB");
+    let anti_spam_service = Arc::new(crate::core::moderation::AntiSpamService::new(spam_store));
+
     // Create the data structure that will be shared across all commands
     let data = Data {
         leveling: Arc::clone(&leveling_service),
@@ -679,6 +717,7 @@ async fn main() {
         ai: Arc::clone(&ai_service),
         economy: Arc::clone(&economy_service),
         inventory: Arc::clone(&inventory_service),
+        anti_spam: Arc::clone(&anti_spam_service),
     };
 
     // ========================================================================
@@ -713,6 +752,8 @@ async fn main() {
                 discord::commands::github::github(),
                 discord::commands::info::info(),
                 discord::commands::help::help(),
+                // Anti-spam moderation
+                discord::moderation::commands::antispam(),
             ],
             // Event handler for messages and other events
             event_handler: |ctx, event, framework, data| {

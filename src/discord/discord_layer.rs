@@ -15,6 +15,9 @@ pub mod github;
 #[path = "ai/mod.rs"]
 pub mod ai;
 
+#[path = "moderation/mod.rs"]
+pub mod moderation;
+
 // Re-export command types for convenience
 pub use commands::leveling::Context;
 pub use commands::leveling::{Data, Error};
