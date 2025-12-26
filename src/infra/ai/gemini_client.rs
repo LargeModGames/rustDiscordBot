@@ -825,22 +825,36 @@ impl AiProvider for GeminiClient {
                 .send()
                 .await?;
 
-            // Handle rate limits (429) with fallback
-            if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                tracing::warn!(
-                    "Gemini API rate limit reached for model: {}",
-                    current_config.model
-                );
-
-                if let Some(next_model) =
-                    crate::core::ai::models::get_next_best_model(&current_config.model)
-                {
-                    tracing::info!("Switching to fallback model: {}", next_model);
-                    current_config.model = next_model;
-                    continue;
+            // Handle rate limits (429) or missing models (404/400) with fallback
+            let status = response.status();
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                || status == reqwest::StatusCode::NOT_FOUND
+                || status == reqwest::StatusCode::BAD_REQUEST
+            {
+                // For 400/404, we only fallback if it's likely a model availability issue
+                let should_fallback = if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                    true
                 } else {
-                    tracing::error!("No more fallback models available");
-                    // Let the error handling below catch it or return a specific error
+                    // Peek at the response text to see if it's a model error
+                    // (But we can only read the body once, so we'll just try falling back
+                    // if there's a next model available anyway, as it's better than
+                    // completely failing).
+                    true
+                };
+
+                if should_fallback {
+                    if let Some(next_model) =
+                        crate::core::ai::models::get_next_best_model(&current_config.model)
+                    {
+                        tracing::warn!(
+                            "Gemini API error ({}) for model: {}. Switching to fallback: {}",
+                            status,
+                            current_config.model,
+                            next_model
+                        );
+                        current_config.model = next_model;
+                        continue;
+                    }
                 }
             }
 

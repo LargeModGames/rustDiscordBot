@@ -353,6 +353,8 @@ pub struct AiResponse {
 /// Hierarchy of Gemini models from best to worst.
 /// Used for fallback logic when rate limits are encountered.
 pub const MODEL_HIERARCHY: &[&str] = &[
+    "gemini-3-pro",
+    "gemini-3-flash",
     "gemini-2.5-pro",
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
