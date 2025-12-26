@@ -519,8 +519,12 @@ async fn main() {
         // Gemini configuration
         let gemini_api_key = std::env::var("GEMINI_API_KEY")
             .expect("Missing GEMINI_API_KEY environment variable when AI_PROVIDER=gemini");
-        let gemini_model =
-            std::env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-3-pro".to_string());
+        let mut gemini_model = std::env::var("GEMINI_MODEL").unwrap_or_else(|_| "auto".to_string());
+
+        // Handle "auto" or "best" to always use the top of our hierarchy
+        if gemini_model == "auto" || gemini_model == "best" {
+            gemini_model = crate::core::ai::models::MODEL_HIERARCHY[0].to_string();
+        }
 
         tracing::info!("Using Gemini AI provider with model: {}", gemini_model);
 
