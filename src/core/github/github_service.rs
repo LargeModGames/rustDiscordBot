@@ -456,23 +456,34 @@ where
         let mut updates = Vec::new();
         let mut dirty = false;
 
-        // Commits per branch
+        let is_first_poll = state.last_commit_shas.is_empty();
         let branches = self.client.list_branches(owner, repo).await?;
         for branch in branches {
             let commits = self.client.list_commits(owner, repo, &branch, 10).await?;
-            let last_seen = state.last_commit_shas.get(&branch).cloned();
-            if last_seen.is_none() {
-                // First run: store a baseline so we don't flood the channel with history.
-                if let Some(latest) = commits.first() {
+            let latest_sha = commits.first().map(|c| c.sha.as_str());
+            let last_seen_sha = state.last_commit_shas.get(&branch).cloned();
+
+            if last_seen_sha.is_none() {
+                if let Some(sha) = latest_sha {
+                    // Check if this latest SHA is already known from another branch
+                    let is_sha_already_tracked = state.last_commit_shas.values().any(|s| s == sha);
+
                     state
                         .last_commit_shas
-                        .insert(branch.clone(), latest.sha.clone());
+                        .insert(branch.clone(), sha.to_string());
                     dirty = true;
+
+                    if is_first_poll || is_sha_already_tracked {
+                        // Quiet baseline creation or same commit as another branch
+                        continue;
+                    }
+                } else {
+                    // Empty branch or error listing commits
+                    continue;
                 }
-                continue;
             }
 
-            let new_commits = collect_new_commits(&commits, last_seen.as_deref());
+            let new_commits = collect_new_commits(&commits, last_seen_sha.as_deref());
 
             if !new_commits.is_empty() {
                 for commit in &new_commits {
@@ -655,4 +666,168 @@ fn collect_issue_events(
 
     events.sort_by_key(|(issue, _)| issue.updated_at.unwrap_or(DateTime::<Utc>::MIN_UTC));
     events
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    struct MockGithubClient {
+        branches: Vec<String>,
+        commits: HashMap<String, Vec<Commit>>,
+    }
+
+    #[async_trait]
+    impl GithubClient for MockGithubClient {
+        async fn list_org_repos(&self, _org: &str) -> Result<Vec<String>, GithubError> {
+            Ok(vec![])
+        }
+        async fn list_branches(
+            &self,
+            _owner: &str,
+            _repo: &str,
+        ) -> Result<Vec<String>, GithubError> {
+            Ok(self.branches.clone())
+        }
+        async fn list_commits(
+            &self,
+            _owner: &str,
+            _repo: &str,
+            branch: &str,
+            _per_page: usize,
+        ) -> Result<Vec<Commit>, GithubError> {
+            Ok(self.commits.get(branch).cloned().unwrap_or_default())
+        }
+        async fn list_bug_issues(
+            &self,
+            _owner: &str,
+            _repo: &str,
+            _since: Option<DateTime<Utc>>,
+        ) -> Result<Vec<Issue>, GithubError> {
+            Ok(vec![])
+        }
+        async fn list_general_issues(
+            &self,
+            _owner: &str,
+            _repo: &str,
+            _since: Option<DateTime<Utc>>,
+        ) -> Result<Vec<Issue>, GithubError> {
+            Ok(vec![])
+        }
+    }
+
+    struct MockStore {
+        config: Mutex<GithubConfig>,
+    }
+
+    #[async_trait]
+    impl GithubConfigStore for MockStore {
+        async fn load(&self) -> Result<GithubConfig, GithubError> {
+            Ok(self.config.lock().unwrap().clone())
+        }
+        async fn save(&self, config: &GithubConfig) -> Result<(), GithubError> {
+            *self.config.lock().unwrap() = config.clone();
+            Ok(())
+        }
+    }
+
+    fn create_commit(sha: &str) -> Commit {
+        Commit {
+            sha: sha.to_string(),
+            message: "msg".to_string(),
+            author_name: "auth".to_string(),
+            html_url: "url".to_string(),
+            avatar_url: None,
+            committed_at: Some(Utc::now()),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_new_branch_detection() {
+        let mut commits = HashMap::new();
+        commits.insert("main".to_string(), vec![create_commit("sha1")]);
+
+        let client = MockGithubClient {
+            branches: vec!["main".to_string()],
+            commits,
+        };
+        let store = MockStore {
+            config: Mutex::new(GithubConfig::default()),
+        };
+        let service = GithubService::new(client, store).await.unwrap();
+
+        // 1. Initial track
+        service
+            .track_repository(1, "owner", "repo", 100)
+            .await
+            .unwrap();
+
+        // 2. First poll (baseline)
+        let updates = service.poll_updates().await.unwrap();
+        assert!(updates.is_empty(), "First poll should be quiet baseline");
+
+        // 3. Add a new branch with a NEW commit
+        let mut new_commits = HashMap::new();
+        new_commits.insert("main".to_string(), vec![create_commit("sha1")]);
+        new_commits.insert("feat".to_string(), vec![create_commit("sha2")]);
+
+        let client_v2 = MockGithubClient {
+            branches: vec!["main".to_string(), "feat".to_string()],
+            commits: new_commits,
+        };
+        // Re-inject client (simulated by service update or new service with same store)
+        let service_v2 = GithubService::new(client_v2, service.store).await.unwrap();
+
+        let updates = service_v2.poll_updates().await.unwrap();
+        assert_eq!(
+            updates.len(),
+            1,
+            "Should detect 1 new commit on the new branch"
+        );
+        if let GithubEvent::CommitPushed { branch, commit, .. } = &updates[0].event {
+            assert_eq!(branch, "feat");
+            assert_eq!(commit.sha, "sha2");
+        } else {
+            panic!("Unexpected event type");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_new_branch_from_main_no_new_commits_is_quiet() {
+        let mut commits = HashMap::new();
+        commits.insert("main".to_string(), vec![create_commit("sha1")]);
+
+        let client = MockGithubClient {
+            branches: vec!["main".to_string()],
+            commits,
+        };
+        let store = MockStore {
+            config: Mutex::new(GithubConfig::default()),
+        };
+        let service = GithubService::new(client, store).await.unwrap();
+
+        service
+            .track_repository(1, "owner", "repo", 100)
+            .await
+            .unwrap();
+        service.poll_updates().await.unwrap();
+
+        // Add a new branch pointing to the SAME commit
+        let mut new_commits = HashMap::new();
+        new_commits.insert("main".to_string(), vec![create_commit("sha1")]);
+        new_commits.insert("feat".to_string(), vec![create_commit("sha1")]);
+
+        let client_v2 = MockGithubClient {
+            branches: vec!["main".to_string(), "feat".to_string()],
+            commits: new_commits,
+        };
+        let service_v2 = GithubService::new(client_v2, service.store).await.unwrap();
+
+        let updates = service_v2.poll_updates().await.unwrap();
+        assert!(
+            updates.is_empty(),
+            "Should be quiet if the branch has no new unique commits"
+        );
+    }
 }
