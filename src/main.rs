@@ -810,13 +810,23 @@ async fn main() {
                 println!("🚀 Bot is ready!");
                 presence::on_ready(ctx, &data).await;
 
-                // Background GitHub poller (commits, issues). Runs every 60 seconds.
+                // Background GitHub poller (commits, issues). Default: every 5 minutes.
                 let github_service = Arc::clone(&data.github);
                 let github_http = ctx.http.clone();
+                let poll_interval_secs = std::env::var("GITHUB_POLL_INTERVAL_SECS")
+                    .ok()
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(300)
+                    .max(300);
+                tracing::info!(
+                    "GitHub poll interval set to {} seconds",
+                    poll_interval_secs
+                );
                 tokio::spawn(async move {
                     use std::time::Duration as StdDuration;
                     use tokio::time::sleep;
 
+                    let poll_interval = StdDuration::from_secs(poll_interval_secs);
                     loop {
                         tracing::debug!("Starting background GitHub poll...");
                         match github_service.poll_updates().await {
@@ -831,7 +841,7 @@ async fn main() {
                             Err(err) => tracing::warn!("GitHub poll failed: {}", err),
                         }
 
-                        sleep(StdDuration::from_secs(60)).await;
+                        sleep(poll_interval).await;
                     }
                 });
 
