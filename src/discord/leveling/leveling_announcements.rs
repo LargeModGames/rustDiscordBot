@@ -3,13 +3,14 @@ use crate::discord::Data;
 use poise::serenity_prelude::{self as serenity, builder::CreateMessage};
 use rand::seq::SliceRandom;
 
-/// Send a Greybeard-style level-up embed to the originating channel.
+/// Send a Greybeard-style level-up embed to the leveling announcements channel.
 pub async fn send_level_up_embed(
     ctx: &serenity::Context,
     message: &serenity::Message,
     data: &Data,
     level_up: &LevelUpEvent,
 ) -> Result<(), serenity::Error> {
+    let announcement_channel_id = serenity::ChannelId::from(1456341010262266114u64);
     let leveling = &data.leveling;
     let previous_threshold = leveling.xp_for_level(level_up.new_level);
     let next_threshold = leveling.xp_for_next_level(level_up.new_level);
@@ -40,8 +41,7 @@ pub async fn send_level_up_embed(
         )
         .footer(serenity::CreateEmbedFooter::new(random_flavor_line()));
 
-    message
-        .channel_id
+    announcement_channel_id
         .send_message(ctx, CreateMessage::new().embed(embed))
         .await
         .map(|_| ())
