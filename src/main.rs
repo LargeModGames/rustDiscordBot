@@ -746,6 +746,7 @@ async fn main() {
                 discord::commands::leveling::give_xp(),
                 discord::commands::leveling::achievements(),
                 discord::commands::leveling::prestige(),
+                discord::commands::leveling::sync_prestige(),
                 discord::commands::economy::balance(),
                 discord::commands::economy::daily(),
                 discord::commands::shop::shop(),
