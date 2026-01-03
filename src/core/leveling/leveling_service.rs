@@ -1504,17 +1504,17 @@ mod tests {
         assert_eq!(service.calculate_level(0), 1);
         assert_eq!(service.calculate_level(50), 1);
         assert_eq!(service.calculate_level(100), 2);
-        assert_eq!(service.calculate_level(200), 2);
-        assert_eq!(service.calculate_level(450), 3);
+        assert_eq!(service.calculate_level(200), 3);
+        assert_eq!(service.calculate_level(450), 5);
     }
 
     #[test]
     fn test_xp_for_next_level() {
         let service = make_service();
 
-        assert_eq!(service.xp_for_next_level(1), 100);
-        assert_eq!(service.xp_for_next_level(2), 282); // floor(100 * 2^1.5)
-        assert_eq!(service.xp_for_next_level(3), 519); // floor(100 * 3^1.5)
+        assert_eq!(service.xp_for_next_level(1), 60);
+        assert_eq!(service.xp_for_next_level(2), 152); // floor(60 * 2^1.35)
+        assert_eq!(service.xp_for_next_level(3), 264); // floor(60 * 3^1.35)
     }
 
     #[test]

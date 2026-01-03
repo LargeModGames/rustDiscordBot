@@ -749,6 +749,162 @@ pub struct Data {
         Arc<crate::core::moderation::AntiSpamService<crate::infra::moderation::SqliteSpamStore>>,
 }
 
+
+/// Sync prestige roles for all users (retroactive fix).
+///
+/// Scans the leaderboard and ensures everyone has the correct prestige role
+/// based on their current prestige level.
+#[poise::command(slash_command, guild_only, required_permissions = "ADMINISTRATOR")]
+pub async fn sync_prestige(ctx: Context<'_>) -> Result<(), Error> {
+    let guild_id = ctx
+        .guild_id()
+        .ok_or("This command only works in servers")?
+        .get();
+
+    ctx.defer().await?;
+
+    // 1. Fetch leaderboard to find prestiged users
+    // We fetch a large number (e.g. 2000) to catch everyone.
+    let profiles = ctx.data().leveling.get_leaderboard(guild_id, 2000).await?;
+    let prestiged_users: Vec<_> = profiles
+        .into_iter()
+        .filter(|p| p.prestige_level > 0)
+        .collect();
+
+    if prestiged_users.is_empty() {
+        ctx.say("No users with prestige found.").await?;
+        return Ok(());
+    }
+
+    ctx.say(format!(
+        "Found {} prestiged users. Syncing roles... (This may take a moment)",
+        prestiged_users.len()
+    ))
+    .await?;
+
+    let http = ctx.http();
+    let guild_id_s = serenity::GuildId::from(guild_id);
+
+    // Refresh roles cache
+    let roles = guild_id_s.roles(http).await?;
+    let mut synced_count = 0;
+    let mut errors = 0;
+
+    for user_stats in prestiged_users {
+        let user_id = user_stats.user_id;
+        let user_id_s = serenity::UserId::from(user_id);
+        let current_level = user_stats.prestige_level;
+
+        // Ensure the correct role exists and is assigned
+        // We reuse manage_prestige_roles for the "add current" part
+        // But we need to be careful not to spam logs or hit rate limits too hard.
+        // Also manage_prestige_roles removes (level - 1). We want to remove ALL others.
+
+        // Let's do a custom sync logic here for robustness.
+
+        // 1. Ensure target role exists
+        let target_role_name = format!("Prestige {}", current_level);
+        let target_role_id = if let Some(role) = roles.values().find(|r| r.name == target_role_name)
+        {
+            role.id
+        } else {
+            // Create if missing
+            let color = get_prestige_color(current_level);
+            match guild_id_s
+                .create_role(
+                    http,
+                    serenity::EditRole::new()
+                        .name(&target_role_name)
+                        .colour(color)
+                        .hoist(true)
+                        .mentionable(false),
+                )
+                .await
+            {
+                Ok(role) => role.id,
+                Err(e) => {
+                    println!("Failed to create role {}: {:?}", target_role_name, e);
+                    errors += 1;
+                    continue;
+                }
+            }
+        };
+
+        // 2. Manage user roles
+        match http.get_member(guild_id_s, user_id_s).await {
+            Ok(member) => {
+                let mut added = false;
+                let mut removed = false;
+
+                // Add target role if missing
+                if !member.roles.contains(&target_role_id) {
+                    if let Err(e) = http
+                        .add_member_role(
+                            guild_id_s,
+                            user_id_s,
+                            target_role_id,
+                            Some("Prestige Sync"),
+                        )
+                        .await
+                    {
+                        println!("Failed to add role to {}: {:?}", user_id, e);
+                        errors += 1;
+                    } else {
+                        added = true;
+                    }
+                }
+
+                // Remove ANY other "Prestige X" roles
+                for role_id in &member.roles {
+                    // Don't remove the one we just ensured
+                    if *role_id == target_role_id {
+                        continue;
+                    }
+
+                    if let Some(role) = roles.get(role_id) {
+                        if role.name.starts_with("Prestige ") {
+                            // Verify it's not the target (double check name)
+                            if role.name != target_role_name {
+                                if let Err(e) = http
+                                    .remove_member_role(
+                                        guild_id_s,
+                                        user_id_s,
+                                        *role_id,
+                                        Some("Prestige Sync - Cleanup"),
+                                    )
+                                    .await
+                                {
+                                    println!("Failed to remove role {} from {}: {:?}", role.name, user_id, e);
+                                } else {
+                                    removed = true;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if added || removed {
+                    synced_count += 1;
+                }
+            }
+            Err(e) => {
+                println!("Failed to fetch member {}: {:?}", user_id, e);
+                errors += 1;
+            }
+        }
+    }
+
+    ctx.send(
+        poise::CreateReply::default().content(format!(
+            "✅ **Sync Complete!**\nUpdated roles for {} users.\nErrors encountered: {}",
+            synced_count, errors
+        )),
+    )
+    .await?;
+
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, poise::ChoiceParameter)]
 pub enum AwardReason {
     #[name = "Message"]
@@ -1082,6 +1238,11 @@ pub async fn prestige(ctx: Context<'_>) -> Result<(), Error> {
                 // Perform prestige
                 let prestige_event = ctx.data().leveling.prestige_user(user_id, guild_id).await?;
 
+                // Manage prestige roles
+                if let Err(e) = manage_prestige_roles(&ctx, guild_id, user_id, prestige_event.new_prestige_level).await {
+                    println!("Failed to update prestige roles: {:?}", e);
+                }
+
                 let new_tier = crate::core::leveling::LevelingService::<
                     crate::infra::leveling::SqliteXpStore,
                 >::get_prestige_tier_info(
@@ -1207,4 +1368,85 @@ fn build_progress_bar(progress: f64, length: usize) -> String {
     let empty_char = "▱";
     let bar = filled_char.repeat(filled) + &empty_char.repeat(length - filled);
     format!("{} ({}%)", bar, (clamped * 100.0).round() as u32)
+}
+
+/// Get the color for a prestige level (rising progression).
+fn get_prestige_color(level: u32) -> u32 {
+    match level {
+        1 => 0xCD7F32, // Bronze
+        2 => 0xC0C0C0, // Silver
+        3 => 0xFFD700, // Gold
+        4 => 0xE5E4E2, // Platinum
+        5 => 0x007FFF, // Electric Blue
+        6 => 0x9B59B6, // Vivid Purple
+        7 => 0xDC143C, // Crimson Red
+        8 => 0xFF69B4, // Hot Pink
+        9 => 0x39FF14, // Neon Green
+        _ => 0x00FFFF, // Glowing Cyan (Level 10+)
+    }
+}
+
+/// Helper to manage prestige roles.
+///
+/// Adds "Prestige {N}" and removes "Prestige {N-1}".
+/// Automatically creates the role if it doesn't exist.
+async fn manage_prestige_roles(
+    ctx: &Context<'_>,
+    guild_id: u64,
+    user_id: u64,
+    new_level: u32,
+) -> Result<(), Error> {
+    let guild_id = serenity::GuildId::from(guild_id);
+    let user_id = serenity::UserId::from(user_id);
+    let http = ctx.http();
+
+    // Get all guild roles
+    // We use the HTTP API to ensure we have the latest list
+    let roles = guild_id.roles(http).await?;
+
+    // 1. Identify or Create the new role
+    let new_role_name = format!("Prestige {}", new_level);
+    let role_to_add_id = if let Some(role) = roles.values().find(|r| r.name == new_role_name) {
+        role.id
+    } else {
+        // Create the role if it doesn't exist
+        let color = get_prestige_color(new_level);
+        println!(
+            "Role '{}' not found. Creating it with color {:06X}...",
+            new_role_name, color
+        );
+        let new_role = guild_id
+            .create_role(
+                http,
+                serenity::EditRole::new()
+                    .name(&new_role_name)
+                    .colour(color)
+                    .hoist(true) // Show separately in member list
+                    .mentionable(false),
+            )
+            .await?;
+        new_role.id
+    };
+
+    // Add the new role
+    http.add_member_role(guild_id, user_id, role_to_add_id, Some("Prestige Level Up"))
+        .await?;
+    println!("Added role '{}' to user {}", new_role_name, user_id);
+
+    // 2. Identify the old role to remove (if applicable)
+    // If they just prestiged to 1, there is no "Prestige 0" role to remove usually.
+    // If they prestiged to 2, remove "Prestige 1".
+    if new_level > 1 {
+        let old_role_name = format!("Prestige {}", new_level - 1);
+        let role_to_remove = roles.values().find(|r| r.name == old_role_name);
+
+        if let Some(role) = role_to_remove {
+            // Remove the old role
+            http.remove_member_role(guild_id, user_id, role.id, Some("Prestige Level Up"))
+                .await?;
+            println!("Removed role '{}' from user {}", old_role_name, user_id);
+        }
+    }
+
+    Ok(())
 }
