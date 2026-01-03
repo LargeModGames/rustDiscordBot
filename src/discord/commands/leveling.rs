@@ -786,7 +786,7 @@ pub async fn sync_prestige(ctx: Context<'_>) -> Result<(), Error> {
     let guild_id_s = serenity::GuildId::from(guild_id);
 
     // Refresh roles cache
-    let roles = guild_id_s.roles(http).await?;
+    let mut roles = guild_id_s.roles(http).await?;
     let mut synced_count = 0;
     let mut errors = 0;
 
@@ -815,13 +815,17 @@ pub async fn sync_prestige(ctx: Context<'_>) -> Result<(), Error> {
                     http,
                     serenity::EditRole::new()
                         .name(&target_role_name)
-                        .colour(color)
+                        .colour(serenity::Colour::from(color))
                         .hoist(true)
                         .mentionable(false),
                 )
                 .await
             {
-                Ok(role) => role.id,
+                Ok(role) => {
+                    // IMPORTANT: Update cache so next iteration finds it
+                    roles.insert(role.id, role.clone());
+                    role.id
+                }
                 Err(e) => {
                     println!("Failed to create role {}: {:?}", target_role_name, e);
                     errors += 1;
