@@ -465,18 +465,54 @@ where
 
             if last_seen_sha.is_none() {
                 if let Some(sha) = latest_sha {
-                    // Check if this latest SHA is already known from another branch
-                    let is_sha_already_tracked = state.last_commit_shas.values().any(|s| s == sha);
+                    if is_first_poll {
+                        // Quiet baseline creation on first poll - just record the SHA
+                        state
+                            .last_commit_shas
+                            .insert(branch.clone(), sha.to_string());
+                        dirty = true;
+                        continue;
+                    }
 
+                    // For new branches, find the first commit that's already tracked from another branch.
+                    // This handles the case where branch B is created from branch A - we only want to
+                    // report commits that are truly new, not the entire branch history.
+                    let first_known_sha = commits.iter().find_map(|c| {
+                        if state.last_commit_shas.values().any(|s| s == &c.sha) {
+                            Some(c.sha.as_str())
+                        } else {
+                            None
+                        }
+                    });
+
+                    // Record that we've now seen this branch
                     state
                         .last_commit_shas
                         .insert(branch.clone(), sha.to_string());
                     dirty = true;
 
-                    if is_first_poll || is_sha_already_tracked {
-                        // Quiet baseline creation or same commit as another branch
+                    if first_known_sha == Some(sha) {
+                        // The latest commit is already tracked elsewhere, nothing new to report
                         continue;
                     }
+
+                    // Report only commits newer than the first known one
+                    let new_commits = collect_new_commits(&commits, first_known_sha);
+                    if !new_commits.is_empty() {
+                        for commit in &new_commits {
+                            updates.push(GithubUpdate {
+                                guild_id,
+                                channel_id,
+                                event: GithubEvent::CommitPushed {
+                                    owner: owner.to_string(),
+                                    repo: repo.to_string(),
+                                    branch: branch.clone(),
+                                    commit: commit.clone(),
+                                },
+                            });
+                        }
+                    }
+                    continue;
                 } else {
                     // Empty branch or error listing commits
                     continue;
@@ -828,6 +864,92 @@ mod tests {
         assert!(
             updates.is_empty(),
             "Should be quiet if the branch has no new unique commits"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_branch_from_existing_only_reports_new_commits() {
+        // Scenario: branch A has commits 1, 2, 3
+        // Branch B is created from A and commits 4, 5 are made
+        // Only commits 4 and 5 should be reported, NOT 1, 2, 3
+
+        let mut commits = HashMap::new();
+        // Main branch has commits sha3 (newest), sha2, sha1 (oldest)
+        commits.insert(
+            "main".to_string(),
+            vec![
+                create_commit("sha3"),
+                create_commit("sha2"),
+                create_commit("sha1"),
+            ],
+        );
+
+        let client = MockGithubClient {
+            branches: vec!["main".to_string()],
+            commits,
+        };
+        let store = MockStore {
+            config: Mutex::new(GithubConfig::default()),
+        };
+        let service = GithubService::new(client, store).await.unwrap();
+
+        // Initial track and poll to establish baseline
+        service
+            .track_repository(1, "owner", "repo", 100)
+            .await
+            .unwrap();
+        let updates = service.poll_updates().await.unwrap();
+        assert!(updates.is_empty(), "First poll should be quiet");
+
+        // Now add branch B created from main (sha3) with new commits sha5 (newest), sha4
+        // Branch B's history: sha5, sha4, sha3, sha2, sha1
+        let mut new_commits = HashMap::new();
+        new_commits.insert(
+            "main".to_string(),
+            vec![
+                create_commit("sha3"),
+                create_commit("sha2"),
+                create_commit("sha1"),
+            ],
+        );
+        new_commits.insert(
+            "feature-b".to_string(),
+            vec![
+                create_commit("sha5"),
+                create_commit("sha4"),
+                create_commit("sha3"), // This is where it branched from main
+                create_commit("sha2"),
+                create_commit("sha1"),
+            ],
+        );
+
+        let client_v2 = MockGithubClient {
+            branches: vec!["main".to_string(), "feature-b".to_string()],
+            commits: new_commits,
+        };
+        let service_v2 = GithubService::new(client_v2, service.store).await.unwrap();
+
+        let updates = service_v2.poll_updates().await.unwrap();
+
+        // Should only report sha4 and sha5 (the 2 new commits), NOT sha1, sha2, sha3
+        assert_eq!(
+            updates.len(),
+            2,
+            "Should only detect 2 new commits (sha4, sha5), not the entire branch history"
+        );
+
+        // Verify the commits are sha4 and sha5 (in order oldest first)
+        let shas: Vec<_> = updates
+            .iter()
+            .filter_map(|u| match &u.event {
+                GithubEvent::CommitPushed { commit, .. } => Some(commit.sha.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            shas,
+            vec!["sha4", "sha5"],
+            "Should report sha4 and sha5 in order"
         );
     }
 }
