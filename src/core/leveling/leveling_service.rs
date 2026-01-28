@@ -254,6 +254,13 @@ pub trait XpStore: Send + Sync {
         limit: usize,
     ) -> Result<Vec<UserStats>, LevelingError>;
 
+    /// Get the top users in a guild by daily streak.
+    async fn get_streak_leaderboard(
+        &self,
+        guild_id: u64,
+        limit: usize,
+    ) -> Result<Vec<UserProfile>, LevelingError>;
+
     /// Update the last XP gain time for cooldown tracking.
     async fn update_last_xp_time(
         &self,
@@ -1081,6 +1088,17 @@ impl<S: XpStore> LevelingService<S> {
         Self::validate_guild_id(guild_id)?;
 
         self.store.get_leaderboard(guild_id, limit).await
+    }
+
+    /// Get the top users in a guild by daily streak.
+    pub async fn get_streak_leaderboard(
+        &self,
+        guild_id: u64,
+        limit: usize,
+    ) -> Result<Vec<UserProfile>, LevelingError> {
+        Self::validate_guild_id(guild_id)?;
+
+        self.store.get_streak_leaderboard(guild_id, limit).await
     }
 
     /// Recalculate ranks for all profiles in a guild and persist the updated rank fields.

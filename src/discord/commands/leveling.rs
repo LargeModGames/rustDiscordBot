@@ -566,6 +566,303 @@ pub async fn leaderboard(
     Ok(())
 }
 
+/// Show the server's daily streak leaderboard.
+#[poise::command(slash_command, guild_only)]
+pub async fn dailyleaderboard(
+    ctx: Context<'_>,
+    #[description = "Page number (default: 1)"]
+    #[min = 1]
+    page: Option<usize>,
+) -> Result<(), Error> {
+    // 1. Extract primitive data
+    let guild_id = ctx
+        .guild_id()
+        .ok_or("This command only works in servers")?
+        .get();
+
+    // Defer response since fetching might take a moment
+    ctx.defer().await?;
+
+    // 2. Fetch streak leaderboard
+    let all_profiles = ctx.data().leveling.get_streak_leaderboard(guild_id, 1000).await?;
+
+    // OPTIMIZATION: Filter bots using cache only - don't make HTTP calls.
+    let profiles: Vec<_> = all_profiles
+        .into_iter()
+        .filter(|profile| !is_bot_cached(&ctx, guild_id, profile.user_id))
+        .collect();
+
+    // Check if we have any data
+    if profiles.is_empty() {
+        ctx.say("No one has a daily streak yet! Use `/daily` to start building your streak! 🔥")
+            .await?;
+        return Ok(());
+    }
+
+    let per_page = 10;
+    let total_pages = (profiles.len() + per_page - 1) / per_page;
+    let mut current_page = page.unwrap_or(1).clamp(1, total_pages);
+
+    let msg = {
+        let offset = (current_page - 1) * per_page;
+        let mut description = String::new();
+
+        // Add user's rank at the top
+        let user_id = ctx.author().id.get();
+        if let Some(rank) = profiles
+            .iter()
+            .position(|p| p.user_id == user_id)
+            .map(|i| i + 1)
+        {
+            let user_streak = profiles
+                .iter()
+                .find(|p| p.user_id == user_id)
+                .map(|p| p.daily_streak)
+                .unwrap_or(0);
+            description.push_str(&format!(
+                "Your rank: **#{}** | Streak: **{} days** 🔥\n\n",
+                rank, user_streak
+            ));
+        } else {
+            description.push_str("You don't have a streak yet. Use `/daily` to start!\n\n");
+        }
+
+        for (index, profile) in profiles.iter().skip(offset).take(per_page).enumerate() {
+            let rank = offset + index + 1;
+
+            let user_name = resolve_display_name_cached(&ctx, guild_id, profile.user_id);
+
+            // Add medal emojis for top 3
+            let medal = match rank {
+                1 => "🥇",
+                2 => "🥈",
+                3 => "🥉",
+                _ => "  ",
+            };
+
+            // Highlight the user if it's them
+            let is_me = profile.user_id == ctx.author().id.get();
+            let name_display = if is_me {
+                format!("**{}** (You)", user_name)
+            } else {
+                user_name
+            };
+
+            // Streak emoji based on length
+            let streak_emoji = if profile.daily_streak >= 365 {
+                "👑" // Yearly
+            } else if profile.daily_streak >= 180 {
+                "🌟" // Half year
+            } else if profile.daily_streak >= 100 {
+                "🔥" // 100+ days
+            } else if profile.daily_streak >= 30 {
+                "📆" // Month
+            } else if profile.daily_streak >= 7 {
+                "📅" // Week
+            } else {
+                "✨" // Starting
+            };
+
+            description.push_str(&format!(
+                "{} **#{}** {}\n{} **{} day streak**\n\n",
+                medal, rank, name_display, streak_emoji, profile.daily_streak
+            ));
+        }
+
+        let embed = serenity::CreateEmbed::new()
+            .title("🔥 Daily Streak Leaderboard")
+            .description(description)
+            .color(0xff6b35) // Orange-red color for fire/streak theme
+            .footer(serenity::CreateEmbedFooter::new(format!(
+                "Page {}/{}",
+                current_page, total_pages
+            )));
+
+        let components = vec![serenity::CreateActionRow::Buttons(vec![
+            serenity::CreateButton::new("prev_streak")
+                .label("◀ Previous")
+                .style(serenity::ButtonStyle::Primary)
+                .disabled(current_page == 1),
+            serenity::CreateButton::new("next_streak")
+                .label("Next ▶")
+                .style(serenity::ButtonStyle::Primary)
+                .disabled(current_page == total_pages),
+            serenity::CreateButton::new("find_me_streak")
+                .label("🔍 Find Me")
+                .style(serenity::ButtonStyle::Secondary),
+        ])];
+
+        ctx.send(
+            poise::CreateReply::default()
+                .embed(embed)
+                .components(components),
+        )
+        .await?
+    };
+
+    let msg_id = msg.message().await?.id;
+
+    // Interaction loop
+    while let Some(mci) = serenity::ComponentInteractionCollector::new(ctx)
+        .author_id(ctx.author().id)
+        .channel_id(ctx.channel_id())
+        .timeout(std::time::Duration::from_secs(60 * 2)) // 2 minutes
+        .filter(move |mci| mci.message.id == msg_id)
+        .await
+    {
+        // Update page based on interaction
+        match mci.data.custom_id.as_str() {
+            "prev_streak" => {
+                if current_page > 1 {
+                    current_page -= 1;
+                }
+            }
+            "next_streak" => {
+                if current_page < total_pages {
+                    current_page += 1;
+                }
+            }
+            "find_me_streak" => {
+                let user_id = ctx.author().id.get();
+                if let Some(idx) = profiles.iter().position(|p| p.user_id == user_id) {
+                    current_page = (idx / per_page) + 1;
+                } else {
+                    if let Err(e) = mci
+                        .create_response(
+                            &ctx,
+                            serenity::CreateInteractionResponse::Message(
+                                serenity::CreateInteractionResponseMessage::new()
+                                    .content("You don't have a streak yet! Use `/daily` to start.")
+                                    .ephemeral(true),
+                            ),
+                        )
+                        .await
+                    {
+                        println!("Error sending ephemeral response: {:?}", e);
+                    }
+                    continue;
+                }
+            }
+            _ => {}
+        }
+
+        // Defer the update to prevent "Unknown interaction" errors if processing takes > 3s
+        if let Err(e) = mci.defer(&ctx.http()).await {
+            println!("Error deferring interaction: {:?}", e);
+            continue;
+        }
+
+        // Rebuild the message content
+        let offset = (current_page - 1) * per_page;
+        let mut description = String::new();
+
+        // Add user's rank at the top
+        let user_id = ctx.author().id.get();
+        if let Some(rank) = profiles
+            .iter()
+            .position(|p| p.user_id == user_id)
+            .map(|i| i + 1)
+        {
+            let user_streak = profiles
+                .iter()
+                .find(|p| p.user_id == user_id)
+                .map(|p| p.daily_streak)
+                .unwrap_or(0);
+            description.push_str(&format!(
+                "Your rank: **#{}** | Streak: **{} days** 🔥\n\n",
+                rank, user_streak
+            ));
+        } else {
+            description.push_str("You don't have a streak yet. Use `/daily` to start!\n\n");
+        }
+
+        for (index, profile) in profiles.iter().skip(offset).take(per_page).enumerate() {
+            let rank = offset + index + 1;
+
+            let user_name = resolve_display_name_cached(&ctx, guild_id, profile.user_id);
+
+            let medal = match rank {
+                1 => "🥇",
+                2 => "🥈",
+                3 => "🥉",
+                _ => "  ",
+            };
+
+            let is_me = profile.user_id == ctx.author().id.get();
+            let name_display = if is_me {
+                format!("**{}** (You)", user_name)
+            } else {
+                user_name
+            };
+
+            let streak_emoji = if profile.daily_streak >= 365 {
+                "👑"
+            } else if profile.daily_streak >= 180 {
+                "🌟"
+            } else if profile.daily_streak >= 100 {
+                "🔥"
+            } else if profile.daily_streak >= 30 {
+                "📆"
+            } else if profile.daily_streak >= 7 {
+                "📅"
+            } else {
+                "✨"
+            };
+
+            description.push_str(&format!(
+                "{} **#{}** {}\n{} **{} day streak**\n\n",
+                medal, rank, name_display, streak_emoji, profile.daily_streak
+            ));
+        }
+
+        let embed = serenity::CreateEmbed::new()
+            .title("🔥 Daily Streak Leaderboard")
+            .description(description)
+            .color(0xff6b35)
+            .footer(serenity::CreateEmbedFooter::new(format!(
+                "Page {}/{}",
+                current_page, total_pages
+            )));
+
+        let components = vec![serenity::CreateActionRow::Buttons(vec![
+            serenity::CreateButton::new("prev_streak")
+                .label("◀ Previous")
+                .style(serenity::ButtonStyle::Primary)
+                .disabled(current_page == 1),
+            serenity::CreateButton::new("next_streak")
+                .label("Next ▶")
+                .style(serenity::ButtonStyle::Primary)
+                .disabled(current_page == total_pages),
+            serenity::CreateButton::new("find_me_streak")
+                .label("🔍 Find Me")
+                .style(serenity::ButtonStyle::Secondary),
+        ])];
+
+        // Update the message using the handle since we deferred the interaction
+        if let Err(e) = msg
+            .edit(
+                ctx,
+                poise::CreateReply::default()
+                    .embed(embed)
+                    .components(components),
+            )
+            .await
+        {
+            println!("Error updating streak leaderboard: {:?}", e);
+        }
+    }
+
+    // Remove components after timeout
+    let _ = msg
+        .edit(
+            ctx,
+            poise::CreateReply::default().components(vec![]), // Empty components to remove them
+        )
+        .await;
+
+    Ok(())
+}
+
 /// Resolve a human-friendly display name for a user.
 ///
 /// Order of preference:

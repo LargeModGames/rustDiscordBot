@@ -165,6 +165,40 @@ impl XpStore for InMemoryXpStore {
         Ok(users)
     }
 
+    async fn get_streak_leaderboard(
+        &self,
+        guild_id: u64,
+        limit: usize,
+    ) -> Result<Vec<UserProfile>, LevelingError> {
+        if limit == 0 {
+            return Err(LevelingError::StorageError(
+                "Leaderboard limit must be at least 1".to_string(),
+            ));
+        }
+
+        // Collect all users in this guild with a streak > 0
+        let mut profiles: Vec<UserProfile> = self
+            .data
+            .iter()
+            .filter(|entry| {
+                entry.key().guild_id == guild_id && entry.value().profile.daily_streak > 0
+            })
+            .map(|entry| entry.value().profile.clone())
+            .collect();
+
+        // Sort by daily_streak (highest first), then by last_daily (most recent first)
+        profiles.sort_by(|a, b| {
+            b.daily_streak
+                .cmp(&a.daily_streak)
+                .then(b.last_daily.cmp(&a.last_daily))
+        });
+
+        // Take only the requested number
+        profiles.truncate(limit);
+
+        Ok(profiles)
+    }
+
     async fn update_last_xp_time(
         &self,
         user_id: u64,

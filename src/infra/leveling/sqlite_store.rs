@@ -209,6 +209,69 @@ impl XpStore for SqliteXpStore {
         Ok(stats)
     }
 
+    async fn get_streak_leaderboard(
+        &self,
+        guild_id: u64,
+        limit: usize,
+    ) -> Result<Vec<UserProfile>, LevelingError> {
+        let rows = sqlx::query(
+            "SELECT user_id, guild_id, level, total_xp, xp_to_next_level, total_commands_used, 
+                    total_messages, last_daily, daily_streak, last_message_timestamp, achievements,
+                    best_rank, previous_rank, rank_improvement, images_shared, long_messages,
+                    links_shared, goals_completed, boost_days, first_boost_date, prestige_level,
+                    xp_history
+             FROM user_profiles 
+             WHERE guild_id = ? AND daily_streak > 0
+             ORDER BY daily_streak DESC, last_daily DESC 
+             LIMIT ?"
+        )
+        .bind(guild_id as i64)
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| LevelingError::StorageError(e.to_string()))?;
+
+        let profiles = rows
+            .iter()
+            .map(|row| {
+                let achievements_json: String = row.get("achievements");
+                let achievements: Vec<String> =
+                    serde_json::from_str(&achievements_json).unwrap_or_default();
+
+                let xp_history_json: String = row.get("xp_history");
+                let xp_history: VecDeque<XpEvent> =
+                    serde_json::from_str(&xp_history_json).unwrap_or_default();
+
+                UserProfile {
+                    user_id: row.get::<i64, _>("user_id") as u64,
+                    guild_id: row.get::<i64, _>("guild_id") as u64,
+                    level: row.get::<i64, _>("level") as u32,
+                    total_xp: row.get::<i64, _>("total_xp") as u64,
+                    xp_to_next_level: row.get::<i64, _>("xp_to_next_level") as u64,
+                    total_commands_used: row.get::<i64, _>("total_commands_used") as u64,
+                    total_messages: row.get::<i64, _>("total_messages") as u64,
+                    last_daily: row.get::<Option<DateTime<Utc>>, _>("last_daily"),
+                    daily_streak: row.get::<i64, _>("daily_streak") as u32,
+                    last_message_timestamp: row.get::<Option<DateTime<Utc>>, _>("last_message_timestamp"),
+                    achievements,
+                    best_rank: row.get::<i64, _>("best_rank") as u32,
+                    previous_rank: row.get::<i64, _>("previous_rank") as u32,
+                    rank_improvement: row.get::<i64, _>("rank_improvement") as u32,
+                    images_shared: row.get::<i64, _>("images_shared") as u64,
+                    long_messages: row.get::<i64, _>("long_messages") as u64,
+                    links_shared: row.get::<i64, _>("links_shared") as u64,
+                    goals_completed: row.get::<i64, _>("goals_completed") as u64,
+                    boost_days: row.get::<i64, _>("boost_days") as u64,
+                    first_boost_date: row.get::<Option<DateTime<Utc>>, _>("first_boost_date"),
+                    prestige_level: row.get::<i64, _>("prestige_level") as u32,
+                    xp_history,
+                }
+            })
+            .collect();
+
+        Ok(profiles)
+    }
+
     async fn update_last_xp_time(
         &self,
         user_id: u64,

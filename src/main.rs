@@ -743,6 +743,7 @@ async fn main() {
                 discord::commands::leveling::xpstats(),
                 discord::commands::leveling::next_achievement(),
                 discord::commands::leveling::leaderboard(),
+                discord::commands::leveling::dailyleaderboard(),
                 discord::commands::leveling::give_xp(),
                 discord::commands::leveling::achievements(),
                 discord::commands::leveling::prestige(),
