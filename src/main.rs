@@ -758,8 +758,10 @@ async fn main() {
                 discord::commands::github::github(),
                 discord::commands::info::info(),
                 discord::commands::help::help(),
-                // Anti-spam moderation
+// Anti-spam moderation
                 discord::moderation::commands::antispam(),
+                // Reminders
+                discord::commands::remind::remind(),
             ],
             // Event handler for messages and other events
             event_handler: |ctx, event, framework, data| {

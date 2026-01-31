@@ -19,3 +19,5 @@ pub mod github;
 pub mod info;
 
 pub mod help;
+
+pub mod remind;
