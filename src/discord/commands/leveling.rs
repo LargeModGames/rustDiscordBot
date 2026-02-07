@@ -1044,6 +1044,8 @@ pub struct Data {
     /// Anti-spam moderation service
     pub anti_spam:
         Arc<crate::core::moderation::AntiSpamService<crate::infra::moderation::SqliteSpamStore>>,
+    /// Knowledge store for RAG-lite retrieval
+    pub knowledge: Arc<crate::infra::ai::SqliteKnowledgeStore>,
 }
 
 

@@ -1509,6 +1509,16 @@ mod tests {
                 "Noop store should not be used".to_string(),
             ))
         }
+
+        async fn get_streak_leaderboard(
+            &self,
+            _: u64,
+            _: usize,
+        ) -> Result<Vec<UserProfile>, LevelingError> {
+            Err(LevelingError::StorageError(
+                "Noop store should not be used".to_string(),
+            ))
+        }
     }
 
     fn make_service() -> LevelingService<NoopStore> {

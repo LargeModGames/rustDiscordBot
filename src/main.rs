@@ -115,10 +115,17 @@ async fn event_handler(
                 // We want the last N messages, excluding the current one if possible, but Serenity's `messages`
                 // usually returns the latest ones.
                 // We'll fetch slightly more to be safe and filter.
-                let max_history = std::env::var("OPENROUTER_MAX_HISTORY")
+                let max_history = std::env::var("AI_MAX_HISTORY")
+                    .or_else(|_| std::env::var("OPENROUTER_MAX_HISTORY")) // Legacy fallback
                     .ok()
                     .and_then(|v| v.parse::<u8>().ok())
                     .unwrap_or(50);
+
+                // Token budget for context selection (default 8000 tokens)
+                let token_budget = std::env::var("AI_CONTEXT_TOKEN_BUDGET")
+                    .ok()
+                    .and_then(|v| v.parse::<usize>().ok())
+                    .unwrap_or(8000);
 
                 // First, fetch background context from announcement/sneak-peek channels.
                 // This gives the AI knowledge about the project even if the current
@@ -140,34 +147,36 @@ async fn event_handler(
                     .await
                     .unwrap_or_default();
 
-                // Convert to AiMessage, reversing order so it's oldest -> newest
+                // Convert to ContextMessage for smart selection, reversing order so it's oldest -> newest
+                let mut raw_context: Vec<crate::core::ai::context::ContextMessage> = Vec::new();
                 for msg in messages.iter().rev() {
-                    // Skip the current message (the mention itself) if we want to handle it separately,
-                    // or include it. Usually we include it as the last user message.
-                    // But wait, `messages` includes the current message if we just fetch latest.
-
                     let role = if msg.author.id == bot_id {
                         "assistant".to_string()
                     } else {
                         "user".to_string()
                     };
 
-                    let content = if role == "user" {
-                        // Include the user's display name AND their mention format
-                        // so the AI can ping them if needed
-                        format!(
-                            "{} (ping: <@{}>): {}",
-                            msg.author.name, msg.author.id, msg.content
-                        )
+                    let timestamp = msg.timestamp.unix_timestamp() as u64;
+                    let author_name = if role == "user" {
+                        msg.author.name.clone()
                     } else {
-                        msg.content.clone()
+                        String::new()
                     };
 
-                    context_messages.push(crate::core::ai::AiMessage { role, content });
+                    raw_context.push(crate::core::ai::context::ContextMessage::new(
+                        role,
+                        msg.content.clone(),
+                        timestamp,
+                        author_name,
+                    ));
                 }
 
-                // Call AI
-                match data.ai.chat(&context_messages).await {
+                // Use smart context selection to stay within token budget
+                let selected_messages = crate::core::ai::context::select_context(raw_context, token_budget);
+                context_messages.extend(selected_messages);
+
+                // Call AI with metadata to get citations
+                match data.ai.chat_with_metadata(&context_messages).await {
                     Ok(response) => {
                         // Send reasoning if present
                         if let Some(reasoning) = response.reasoning {
@@ -190,7 +199,9 @@ async fn event_handler(
                                 .channel_id
                                 .send_message(
                                     &ctx.http,
-                                    serenity::CreateMessage::new().embed(embed),
+                                    serenity::CreateMessage::new()
+                                        .embed(embed)
+                                        .allowed_mentions(serenity::CreateAllowedMentions::new()),
                                 )
                                 .await
                             {
@@ -198,10 +209,21 @@ async fn event_handler(
                             }
                         }
 
+                        // Build the answer with optional citations
+                        let mut full_answer = response.answer.clone();
+                        if let Some(citations_text) = crate::core::ai::format_citations_for_discord(&response.citations) {
+                            full_answer.push_str("\n\n");
+                            full_answer.push_str(&citations_text);
+                        }
+
                         // Split answer if too long (Discord limit 2000)
-                        for chunk in response.answer.chars().collect::<Vec<char>>().chunks(2000) {
+                        // Use CreateMessage with empty allowed_mentions to prevent pings
+                        for chunk in full_answer.chars().collect::<Vec<char>>().chunks(2000) {
                             let chunk_str: String = chunk.iter().collect();
-                            if let Err(e) = new_message.channel_id.say(&ctx.http, chunk_str).await {
+                            let msg = serenity::CreateMessage::new()
+                                .content(chunk_str)
+                                .allowed_mentions(serenity::CreateAllowedMentions::new());
+                            if let Err(e) = new_message.channel_id.send_message(&ctx.http, msg).await {
                                 tracing::error!("Failed to send AI response: {}", e);
                             }
                         }
@@ -711,6 +733,29 @@ async fn main() {
         .expect("Failed to migrate moderation DB");
     let anti_spam_service = Arc::new(crate::core::moderation::AntiSpamService::new(spam_store));
 
+    // Knowledge Store for RAG-lite retrieval
+    let knowledge_db_path = format!("{}/knowledge.db", data_dir);
+    let knowledge_conn_str = format!("sqlite://{}", knowledge_db_path);
+    let knowledge_options = sqlx::sqlite::SqliteConnectOptions::from_str(&knowledge_conn_str)
+        .expect("Invalid knowledge DB connection string")
+        .create_if_missing(true)
+        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+        .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+        .busy_timeout(std::time::Duration::from_secs(5));
+
+    let knowledge_pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(5)
+        .connect_with(knowledge_options)
+        .await
+        .expect("Failed to connect to knowledge DB");
+
+    let knowledge_store = crate::infra::ai::SqliteKnowledgeStore::new(knowledge_pool);
+    knowledge_store
+        .migrate()
+        .await
+        .expect("Failed to migrate knowledge DB");
+    let knowledge_service = Arc::new(knowledge_store);
+
     // Create the data structure that will be shared across all commands
     let data = Data {
         leveling: Arc::clone(&leveling_service),
@@ -722,6 +767,7 @@ async fn main() {
         economy: Arc::clone(&economy_service),
         inventory: Arc::clone(&inventory_service),
         anti_spam: Arc::clone(&anti_spam_service),
+        knowledge: Arc::clone(&knowledge_service),
     };
 
     // ========================================================================

@@ -350,6 +350,29 @@ pub struct AiResponse {
     pub reasoning: Option<String>,
 }
 
+/// Extended response with grounding metadata (citations, confidence).
+/// Use `AiService::chat_with_metadata` to get this response type.
+#[derive(Debug, Clone)]
+pub struct AiResponseWithMeta {
+    /// The main answer from the model.
+    pub answer: String,
+    /// Optional reasoning/thinking process.
+    pub reasoning: Option<String>,
+    /// Citations extracted from grounding metadata (web sources).
+    pub citations: Vec<Citation>,
+    /// Confidence score if available (0.0 - 1.0).
+    pub confidence: Option<f32>,
+}
+
+/// A citation from a grounded web source.
+#[derive(Debug, Clone)]
+pub struct Citation {
+    /// Title of the source (if available).
+    pub title: Option<String>,
+    /// URL of the source.
+    pub url: String,
+}
+
 /// Hierarchy of Gemini models from best to worst.
 /// Used for fallback logic when rate limits are encountered.
 pub const MODEL_HIERARCHY: &[&str] = &[

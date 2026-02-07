@@ -1,4 +1,7 @@
-use super::models::{AiConfig, AiMessage, AiProviderResponse, AiResponse, AiTool, FunctionCall};
+use super::models::{
+    AiConfig, AiMessage, AiProviderResponse, AiResponse, AiResponseWithMeta, AiTool, Citation,
+    FunctionCall,
+};
 use async_trait::async_trait;
 use std::error::Error;
 
@@ -77,6 +80,8 @@ pub struct AiService<P: AiProvider> {
     config: AiConfig,
     /// Optional function call handler for executing tool calls
     function_handler: Option<Box<dyn FunctionCallHandler>>,
+    /// Maximum number of tool call iterations to prevent infinite loops
+    max_tool_iterations: usize,
 }
 
 impl<P: AiProvider> AiService<P> {
@@ -86,6 +91,7 @@ impl<P: AiProvider> AiService<P> {
             system_prompt,
             config,
             function_handler: None,
+            max_tool_iterations: 3,
         }
     }
 
@@ -104,6 +110,7 @@ impl<P: AiProvider> AiService<P> {
             system_prompt,
             config,
             function_handler: Some(handler),
+            max_tool_iterations: 3,
         }
     }
 
@@ -129,6 +136,27 @@ impl<P: AiProvider> AiService<P> {
         &self,
         context_messages: &[AiMessage],
     ) -> Result<AiResponse, Box<dyn Error + Send + Sync>> {
+        let response_with_meta = self.chat_with_metadata(context_messages).await?;
+        Ok(AiResponse {
+            answer: response_with_meta.answer,
+            reasoning: response_with_meta.reasoning,
+        })
+    }
+
+    /// Sends a chat request and returns an extended response with metadata.
+    ///
+    /// This method extracts citations from grounding metadata when the model
+    /// uses Google Search, making them available for display in Discord.
+    ///
+    /// # Arguments
+    /// * `context_messages` - The conversation context (user messages, etc.)
+    ///
+    /// # Returns
+    /// `AiResponseWithMeta` containing the answer, reasoning, citations, and confidence.
+    pub async fn chat_with_metadata(
+        &self,
+        context_messages: &[AiMessage],
+    ) -> Result<AiResponseWithMeta, Box<dyn Error + Send + Sync>> {
         // Build messages for API: System Prompt + Context
         let mut messages = Vec::new();
         messages.push(AiMessage {
@@ -140,37 +168,117 @@ impl<P: AiProvider> AiService<P> {
         // Call provider - now returns AiProviderResponse with thinking and content
         let mut provider_response = self.provider.chat_complete(&messages, &self.config).await?;
 
-        // Handle function calls if any and we have a handler
-        if let (Some(function_calls), Some(handler)) =
-            (&provider_response.function_calls, &self.function_handler)
-        {
+        // Handle function calls with multi-step support (up to max_tool_iterations rounds)
+        let mut iteration = 0;
+        loop {
+            // Check if we have function calls to process
+            let Some(ref function_calls) = provider_response.function_calls else {
+                break;
+            };
+            let Some(ref handler) = self.function_handler else {
+                break;
+            };
+
+            // Check if we've exceeded max iterations to prevent infinite loops
+            if iteration >= self.max_tool_iterations {
+                tracing::warn!(
+                    "Reached max tool iterations ({}), stopping tool calls",
+                    self.max_tool_iterations
+                );
+                break;
+            }
+
+            tracing::debug!(
+                "Tool call iteration {} of max {}",
+                iteration + 1,
+                self.max_tool_iterations
+            );
+
+            // Clone function_calls to avoid borrow issues when reassigning provider_response
+            let function_calls_owned = function_calls.clone();
+
             // Execute each function call and collect results
             let function_results =
-                Self::execute_function_calls(function_calls, handler.as_ref()).await;
+                Self::execute_function_calls(&function_calls_owned, handler.as_ref()).await;
 
-            // If we got function calls, we need to send results back and get final answer
+            // If we got function calls, we need to send results back and get next response
             if !function_results.is_empty() {
+                // Update messages to include the function call exchange for next iteration
+                let function_call_summary: Vec<String> = function_calls_owned
+                    .iter()
+                    .map(|fc| format!("Called {}({})", fc.name, fc.args))
+                    .collect();
+                messages.push(AiMessage {
+                    role: "assistant".to_string(),
+                    content: format!(
+                        "I need to call some functions: {}",
+                        function_call_summary.join(", ")
+                    ),
+                });
+                messages.push(AiMessage {
+                    role: "user".to_string(),
+                    content: Self::format_function_results(&function_results),
+                });
+
                 provider_response = self
-                    .continue_with_function_results(&messages, function_calls, &function_results)
+                    .continue_with_function_results(
+                        &messages,
+                        &function_calls_owned,
+                        &function_results,
+                        iteration < self.max_tool_iterations - 1, // allow more tools unless last iteration
+                    )
                     .await?;
+            } else {
+                break;
             }
+
+            iteration += 1;
         }
 
         // Parse response for XML tags (some models use <answer>/<rationale> tags)
         let (answer, xml_reasoning) = self.parse_response(&provider_response.content);
 
+        // Extract citations from grounding metadata (before moving thinking)
+        let citations = Self::extract_citations(&provider_response);
+
         // Prefer provider's built-in thinking (Gemini) over XML-parsed reasoning
         // This ensures we get the native thinking experience when available
         let reasoning = provider_response.thinking.or(xml_reasoning);
 
-        Ok(AiResponse { answer, reasoning })
+        // Note: confidence is not currently provided by Gemini grounding metadata
+        // This field is reserved for future use or custom provider implementations
+        let confidence = None;
+
+        Ok(AiResponseWithMeta {
+            answer,
+            reasoning,
+            citations,
+            confidence,
+        })
+    }
+
+    /// Extracts citations from the provider response's grounding metadata.
+    fn extract_citations(provider_response: &AiProviderResponse) -> Vec<Citation> {
+        let Some(ref grounding) = provider_response.grounding_metadata else {
+            return Vec::new();
+        };
+
+        grounding
+            .web_sources
+            .iter()
+            .map(|source| Citation {
+                title: source.title.clone(),
+                url: source.uri.clone(),
+            })
+            .collect()
     }
 
     /// Executes function calls and returns results.
+    /// Each result is a tuple of (name, result, success).
     async fn execute_function_calls(
         function_calls: &[FunctionCall],
         handler: &dyn FunctionCallHandler,
-    ) -> Vec<(String, serde_json::Value)> {
+    ) -> Vec<(String, serde_json::Value, bool)> {
         let mut results = Vec::new();
 
         for call in function_calls {
@@ -183,11 +291,13 @@ impl<P: AiProvider> AiService<P> {
             match handler.handle_function_call(&call.name, &call.args).await {
                 Ok(result) => {
                     tracing::debug!("Function {} returned: {:?}", call.name, result);
-                    results.push((call.name.clone(), result));
+                    results.push((call.name.clone(), result, true));
                 }
                 Err(e) => {
-                    tracing::error!("Function {} failed: {}", call.name, e);
-                    results.push((call.name.clone(), serde_json::json!({ "error": e })));
+                    // Use warn instead of error - failed function calls are not fatal
+                    // and we continue processing other calls
+                    tracing::warn!("Function {} failed: {}", call.name, e);
+                    results.push((call.name.clone(), serde_json::json!({ "error": e }), false));
                 }
             }
         }
@@ -195,12 +305,33 @@ impl<P: AiProvider> AiService<P> {
         results
     }
 
+    /// Formats function results using structured XML-like delimiters.
+    fn format_function_results(results: &[(String, serde_json::Value, bool)]) -> String {
+        let results_text: Vec<String> = results
+            .iter()
+            .map(|(name, result, success)| {
+                let json_str =
+                    serde_json::to_string_pretty(result).unwrap_or_else(|_| result.to_string());
+                format!(
+                    "<function_result name=\"{}\" success=\"{}\">\n{}\n</function_result>",
+                    name, success, json_str
+                )
+            })
+            .collect();
+
+        format!(
+            "Here are the function results. Please use this information to answer my question:\n\n{}",
+            results_text.join("\n\n")
+        )
+    }
+
     /// Continues the conversation with function call results.
     async fn continue_with_function_results(
         &self,
         original_messages: &[AiMessage],
         function_calls: &[FunctionCall],
-        results: &[(String, serde_json::Value)],
+        results: &[(String, serde_json::Value, bool)],
+        allow_more_tools: bool,
     ) -> Result<AiProviderResponse, Box<dyn Error + Send + Sync>> {
         // Build messages including the function call and results
         // The model made function calls, so we add:
@@ -223,35 +354,23 @@ impl<P: AiProvider> AiService<P> {
             ),
         });
 
-        // Add function results as user message
-        // Format the results in a way the model can understand
-        let results_text: Vec<String> = results
-            .iter()
-            .map(|(name, result)| {
-                format!(
-                    "Result from {}:\n{}",
-                    name,
-                    serde_json::to_string_pretty(result).unwrap_or_else(|_| result.to_string())
-                )
-            })
-            .collect();
-
+        // Add function results as user message with structured format
         messages.push(AiMessage {
             role: "user".to_string(),
-            content: format!(
-                "Here are the function results. Please use this information to answer my question:\n\n{}",
-                results_text.join("\n\n")
-            ),
+            content: Self::format_function_results(results),
         });
 
         // Make another API call with the function results
-        // Disable tools for this call to get a final text response
-        let mut config_without_tools = self.config.clone();
-        config_without_tools.tools = None;
+        // Only disable tools on the last iteration to allow multi-step tool use
+        let config = if allow_more_tools {
+            self.config.clone()
+        } else {
+            let mut config_without_tools = self.config.clone();
+            config_without_tools.tools = None;
+            config_without_tools
+        };
 
-        self.provider
-            .chat_complete(&messages, &config_without_tools)
-            .await
+        self.provider.chat_complete(&messages, &config).await
     }
 
     fn parse_response(&self, content: &str) -> (String, Option<String>) {
